@@ -1,0 +1,11 @@
+flask
+flask-sqlalchemy
+flask-migrate
+flask-cors           
+flask-jwt-extended
+flask-login
+psycopg2-binary      
+python-dotenv
+pandas               
+openpyxl             
+werkzeug
