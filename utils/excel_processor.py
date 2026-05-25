@@ -1,195 +1,288 @@
-"""
-Utilidades para procesar archivos Excel de reportes MOSS
+﻿"""
+Utilidades para procesar archivos Excel de reportes MOSS y Aula Virtual
 """
 import pandas as pd
 import re
+import unicodedata
 from typing import Tuple, Dict, List, Optional
+from urllib.request import urlopen
+
 
 class ExcelProcessor:
-    
-    def __init__(self):
-        self.required_columns_base = ['ROL', 'Nombres', 'Apellidos', 'Paralelo', '% de Copia']
-        self.required_columns_duplicate = [col + '.1' for col in self.required_columns_base]
-        
-    def validar_estructura_archivo(self, df: pd.DataFrame) -> Tuple[bool, List[str], List[str]]:
 
-        available_columns = df.columns.tolist()
-        missing_columns = []
-        
-        all_required = self.required_columns_base + self.required_columns_duplicate
-        
-        for col in all_required:
-            if col not in available_columns:
-                missing_columns.append(col)
-        
-        is_valid = len(missing_columns) == 0
-        return is_valid, missing_columns, available_columns
-    
-    def normalizar_nombres_columnas(self, df: pd.DataFrame) -> pd.DataFrame:
-        df_copy = df.copy()
-        
-        column_mapping = {}
-        
-        for col in df_copy.columns:
-            col_lower = col.lower().strip()
-            
-            if any(pattern in col_lower for pattern in ['lineas sim', 'líneas sim', 'lineas similares', 'líneas similares']):
-                column_mapping[col] = 'Lineas_Similares'
-            
-            elif any(pattern in col_lower for pattern in ['moss file', 'moss url', 'url moss', 'archivo moss']):
-                column_mapping[col] = 'MOSS_File'
-            
-            elif 'copia' in col_lower and '%' in col_lower:
-                if '.1' in col:
-                    column_mapping[col] = '% de Copia.1'
-                else:
-                    column_mapping[col] = '% de Copia'
-        
-        if column_mapping:
-            df_copy = df_copy.rename(columns=column_mapping)
-            
-        return df_copy
-    
-    def limpiar_datos(self, df: pd.DataFrame) -> pd.DataFrame:
-        df_clean = df.copy()
-        
-        df_clean = df_clean.dropna(how='all')
-        
-        df_clean = df_clean.dropna(subset=['ROL', 'ROL.1'], how='all')
-        
-        string_columns = df_clean.select_dtypes(include=['object']).columns
-        for col in string_columns:
-            df_clean[col] = df_clean[col].astype(str).str.strip()
-        
-        df_clean = df_clean.replace('nan', None)
-        
-        return df_clean
-    
-    def extraer_datos_casos(self, df: pd.DataFrame) -> List[Dict]:
-        cases_data = []
-        
-        for index, row in df.iterrows():
-            try:
-                if pd.isna(row.get('ROL')) or pd.isna(row.get('ROL.1')):
-                    continue
-                
-                estudiante1 = {
-                    'rol': str(row['ROL']).strip(),
-                    'nombre': str(row.get('Nombres', '')).strip(),
-                    'apellido': str(row.get('Apellidos', '')).strip(),
-                    'paralelo': str(row.get('Paralelo', '')).strip()
-                }
-                
-                estudiante2 = {
-                    'rol': str(row['ROL.1']).strip(),
-                    'nombre': str(row.get('Nombres.1', '')).strip(),
-                    'apellido': str(row.get('Apellidos.1', '')).strip(),
-                    'paralelo': str(row.get('Paralelo.1', '')).strip()
-                }
-                
-                try:
-                    similitud1 = float(row.get('% de Copia', 0))
-                    similitud2 = float(row.get('% de Copia.1', 0))
-                    similitud = max(similitud1, similitud2)
-                except (ValueError, TypeError):
-                    similitud = 0.0
-                
-                lineas = 0
-                lineas_col = None
-                for col_name in ['Lineas_Similares', 'Lineas Sim', 'Lineas Similares']:
-                    if col_name in df.columns and pd.notna(row.get(col_name)):
-                        try:
-                            lineas = int(float(row[col_name]))
-                            break
-                        except (ValueError, TypeError):
-                            continue
-                
-                url_moss = None
-                for col_name in ['MOSS_File', 'MOSS File', 'URL MOSS']:
-                    if col_name in df.columns and pd.notna(row.get(col_name)):
-                        url_moss = str(row[col_name]).strip()
-                        if url_moss.lower() != 'nan' and url_moss:
-                            break
-                        else:
-                            url_moss = None
-                
-                case_data = {
-                    'estudiante1': estudiante1,
-                    'estudiante2': estudiante2,
-                    'similitud': similitud,
-                    'lineas': lineas,
-                    'url_moss': url_moss,
-                    'fila_original': index + 1
-                }
-                
-                cases_data.append(case_data)
-                
-            except Exception as e:
-                print(f"Error procesando fila {index + 1}: {str(e)}")
+    MOSS_MATCH_TIMEOUT_SECONDS = 20
+
+    def _normalizar_texto(self, value) -> str:
+        text = unicodedata.normalize('NFKD', str(value))
+        text = ''.join(ch for ch in text if not unicodedata.combining(ch))
+        text = text.lower().strip()
+        text = re.sub(r'[^a-z0-9]+', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    def _extraer_url_padre_moss(self, dataframe) -> Optional[str]:
+        for _, row in dataframe.iterrows():
+            for value in row.dropna():
+                text_value = str(value).strip()
+                if 'moss.stanford.edu/results/' in text_value:
+                    return text_value.rstrip('/')
+
+        return None
+
+    def _parsear_texto_match_moss(self, raw_text: str) -> Dict[str, str]:
+        text = str(raw_text).strip()
+        if text.startswith('./'):
+            text = text[2:]
+
+        parallel = ''
+        file_text = text
+        if '/' in text:
+            parallel, file_text = text.split('/', 1)
+
+        file_text = file_text.split(' (', 1)[0]
+        file_text = re.sub(r'_assignsubmission_file_.*$', '', file_text)
+        file_text = re.sub(r'_\d+$', '', file_text)
+        file_text = re.sub(r'\.[A-Za-z0-9]{1,5}$', '', file_text)
+
+        return {
+            'raw_text': text,
+            'parallel_raw': parallel.strip(),
+            'parallel_normalized': self._normalizar_texto(parallel),
+            'student_key': self._normalizar_texto(file_text.replace('_', ' ')),
+            'full_text': self._normalizar_texto(text),
+        }
+
+    def _cargar_match_entries_moss(self, url_padre: str) -> Tuple[List[Dict], Dict[str, str]]:
+        if not url_padre:
+            return [], {}
+
+        url_madre = url_padre.rstrip('/') + '/'
+
+        try:
+            html = urlopen(url_madre, timeout=self.MOSS_MATCH_TIMEOUT_SECONDS).read().decode('utf-8', errors='replace')
+        except Exception:
+            return [], {}
+
+        pattern = re.compile(
+            r'<TR><TD><A HREF="(?P<url1>[^"]+)">(?P<text1>.*?)</A>\s*'
+            r'<TD><A HREF="(?P<url2>[^"]+)">(?P<text2>.*?)</A>\s*'
+            r'<TD[^>]*>(?P<lines>\d+)',
+            re.S | re.I
+        )
+
+        match_entries = []
+        primer_paralelo_por_estudiante = {}
+
+        for match in pattern.finditer(html):
+            file1 = self._parsear_texto_match_moss(match.group('text1'))
+            file2 = self._parsear_texto_match_moss(match.group('text2'))
+
+            porcentaje1 = int(re.search(r'\((\d+)%\)', match.group('text1')).group(1))
+            porcentaje2 = int(re.search(r'\((\d+)%\)', match.group('text2')).group(1))
+
+            for parsed_file in (file1, file2):
+                student_key = parsed_file['student_key']
+                parallel_raw = parsed_file['parallel_raw']
+                if student_key and parallel_raw and student_key not in primer_paralelo_por_estudiante:
+                    primer_paralelo_por_estudiante[student_key] = parallel_raw
+
+            match_entries.append({
+                'match_url': match.group('url1'),
+                'text1': file1['full_text'],
+                'text2': file2['full_text'],
+                'student1_key': file1['student_key'],
+                'student2_key': file2['student_key'],
+                'parallel1_raw': file1['parallel_raw'],
+                'parallel2_raw': file2['parallel_raw'],
+                'pct1': porcentaje1,
+                'pct2': porcentaje2,
+                'lines': int(match.group('lines')),
+            })
+
+        return match_entries, primer_paralelo_por_estudiante
+
+    def _buscar_match_moss(self, case_data: Dict, match_entries: List[Dict]) -> Optional[Dict]:
+        estudiante1 = case_data.get('estudiante1', {})
+        estudiante2 = case_data.get('estudiante2', {})
+
+        estudiante1_texto = self._normalizar_texto(estudiante1.get('nombre', ''))
+        estudiante2_texto = self._normalizar_texto(estudiante2.get('nombre', ''))
+        paralelo1_texto = self._normalizar_texto(estudiante1.get('paralelo', ''))
+        paralelo2_texto = self._normalizar_texto(estudiante2.get('paralelo', ''))
+
+        try:
+            similitud_case = int(round(float(case_data.get('similitud', 0))))
+        except Exception:
+            similitud_case = 0
+
+        for match_entry in match_entries:
+            coincidencia_directa = (
+                estudiante1_texto in match_entry['text1'] and
+                estudiante2_texto in match_entry['text2'] and
+                paralelo1_texto in match_entry['text1'] and
+                paralelo2_texto in match_entry['text2']
+            )
+            coincidencia_inversa = (
+                estudiante1_texto in match_entry['text2'] and
+                estudiante2_texto in match_entry['text1'] and
+                paralelo1_texto in match_entry['text2'] and
+                paralelo2_texto in match_entry['text1']
+            )
+
+            if not (coincidencia_directa or coincidencia_inversa):
                 continue
-        
-        return cases_data
-    
-    def validar_datos_caso(self, case_data: Dict) -> Tuple[bool, List[str]]:
-        errors = []
-        
-        if not case_data['estudiante1']['rol'] or case_data['estudiante1']['rol'] == 'nan':
-            errors.append("ROL del primer estudiante es requerido")
-        
-        if not case_data['estudiante2']['rol'] or case_data['estudiante2']['rol'] == 'nan':
-            errors.append("ROL del segundo estudiante es requerido")
-        
-        if not isinstance(case_data['similitud'], (int, float)) or case_data['similitud'] < 0 or case_data['similitud'] > 100:
-            errors.append("Porcentaje de similitud debe estar entre 0 y 100")
-        
-        if case_data['estudiante1']['rol'] == case_data['estudiante2']['rol']:
-            errors.append("No puede haber un caso entre el mismo estudiante")
-        
-        is_valid = len(errors) == 0
-        return is_valid, errors
-    
+
+            if similitud_case and similitud_case not in (match_entry['pct1'], match_entry['pct2']):
+                continue
+
+            return match_entry
+
+        return None
+
     def procesar_archivo_excel(self, file_path_or_dataframe) -> Tuple[bool, Dict, List[str]]:
         try:
             if isinstance(file_path_or_dataframe, str):
-                if file_path_or_dataframe.endswith('.csv'):
-                    df = pd.read_csv(file_path_or_dataframe)
-                else:
-                    df = pd.read_excel(file_path_or_dataframe)
+                df = pd.read_excel(file_path_or_dataframe, header=None) if file_path_or_dataframe.endswith('.xlsx') else pd.read_csv(file_path_or_dataframe, header=None)
             else:
-                df = file_path_or_dataframe
-            
-            is_valid, missing_cols, available_cols = self.validar_estructura_archivo(df)
-            if not is_valid:
-                return False, {}, [f"Columnas faltantes: {missing_cols}", f"Columnas disponibles: {available_cols}"]
-            
-            df = self.normalizar_nombres_columnas(df)
-            
-            df = self.limpiar_datos(df)
-            
-            cases_data = self.extraer_datos_casos(df)
-            
-            valid_cases = []
-            invalid_cases = []
-            
-            for case in cases_data:
-                is_case_valid, case_errors = self.validar_datos_caso(case)
-                if is_case_valid:
-                    valid_cases.append(case)
-                else:
-                    invalid_cases.append({
-                        'fila': case.get('fila_original', 'N/A'),
-                        'errores': case_errors
-                    })
-            
+                df = file_path_or_dataframe.copy()
+                if not df.empty and df.columns[0] != 0:
+                    df = pd.concat([pd.DataFrame([df.columns]), df], ignore_index=True)
+                    df.columns = range(df.shape[1])
+
+            url_padre = self._extraer_url_padre_moss(df)
+            header_idx = -1
+
+            for idx, row in df.iterrows():
+                row_lower = [str(x).strip().lower() for x in row.values]
+                if 'estudiante1' in row_lower and ('estudiante2' in row_lower or 'paralelo1' in row_lower):
+                    header_idx = idx
+                    break
+
+            if header_idx == -1:
+                return False, {}, ["No se encontraron las cabeceras requeridas ('estudiante1', 'estudiante2') en el archivo MOSS"]
+
+            df.columns = df.iloc[header_idx].astype(str).str.strip().str.lower()
+            df = df.iloc[header_idx + 1:].reset_index(drop=True)
+            df = df.dropna(how='all')
+
+            match_entries, primer_paralelo_por_estudiante = self._cargar_match_entries_moss(url_padre) if url_padre else ([], {})
+
+            cases_data = []
+            for index, row in df.iterrows():
+                est1_name = str(row.get('estudiante1', '')).strip()
+                est2_name = str(row.get('estudiante2', '')).strip()
+
+                if not est1_name or est1_name == 'nan' or not est2_name or est2_name == 'nan':
+                    continue
+
+                if self._normalizar_texto(est1_name) == self._normalizar_texto(est2_name):
+                    continue
+
+                estudiante1 = {
+                    'rol': '',
+                    'nombre': est1_name,
+                    'apellido': '',
+                    'paralelo': str(row.get('paralelo1', '')).strip()
+                }
+
+                estudiante2 = {
+                    'rol': '',
+                    'nombre': est2_name,
+                    'apellido': '',
+                    'paralelo': str(row.get('paralelo2', '')).strip()
+                }
+
+                similitud = 0.0
+                if '%' in df.columns:
+                    try:
+                        similitud = float(row['%'])
+                    except Exception:
+                        pass
+
+                caso_data = {
+                    'estudiante1': estudiante1,
+                    'estudiante2': estudiante2,
+                    'similitud': similitud,
+                    'lineas': 0,
+                    'url_moss': url_padre,
+                    'fila_original': header_idx + index + 2
+                }
+
+                match_entry = self._buscar_match_moss(caso_data, match_entries)
+                if match_entry:
+                    estudiante1['paralelo'] = primer_paralelo_por_estudiante.get(
+                        match_entry['student1_key'],
+                        estudiante1['paralelo']
+                    )
+                    estudiante2['paralelo'] = primer_paralelo_por_estudiante.get(
+                        match_entry['student2_key'],
+                        estudiante2['paralelo']
+                    )
+                    caso_data['url_moss'] = match_entry['match_url']
+                    caso_data['lineas'] = match_entry['lines']
+
+                cases_data.append(caso_data)
+
             result = {
-                'casos_validos': valid_cases,
-                'casos_invalidos': invalid_cases,
-                'total_filas_procesadas': len(df),
-                'casos_validos_count': len(valid_cases),
-                'casos_invalidos_count': len(invalid_cases)
+                'casos_validos': cases_data,
+                'casos_invalidos': [],
+                'total_filas_procesadas': len(cases_data),
+                'casos_validos_count': len(cases_data),
+                'casos_invalidos_count': 0,
+                'url_padre_moss': url_padre,
+                'matches_encontrados': len(match_entries),
+                'primer_paralelo_por_estudiante': primer_paralelo_por_estudiante
             }
-            
+
             return True, result, []
-            
+
         except Exception as e:
-            return False, {}, [f"Error procesando archivo: {str(e)}"]
+            return False, {}, [f"Error procesando archivo MOSS: {str(e)}"]
+
+    def procesar_aula_virtual(self, file_path_or_dataframe) -> Tuple[bool, Dict, List[str]]:
+        try:
+            if isinstance(file_path_or_dataframe, str):
+                df = pd.read_excel(file_path_or_dataframe) if file_path_or_dataframe.endswith('.xlsx') else pd.read_csv(file_path_or_dataframe)
+            else:
+                df = file_path_or_dataframe.copy()
+
+            cols = [str(c).lower().strip() for c in df.columns]
+            df.columns = cols
+
+            id_col = 'número de id' if 'número de id' in cols else 'numero de id'
+            if id_col not in cols:
+                return False, {}, [f"No se encontró la columna requerida: Número de ID"]
+
+            if 'grupos' not in cols:
+                return False, {}, [f"No se encontró la columna requerida: Grupos"]
+
+            participantes = []
+            for index, row in df.iterrows():
+                grupos_str = str(row.get('grupos', ''))
+                # Se ajusta regex: XXXYYY_ZL donde XXX pueden ser letras o numeros (e.g. EIN413B). L es obligatorio al final.
+                matches = re.findall(r'[A-Za-z0-9]+_\d+L', grupos_str)
+                if not matches:
+                    continue # No pertenece a un paralelo de laboratorio
+
+                paralelos = list(set([m.strip() for m in matches]))
+
+                numero_id = str(row.get(id_col, '')).strip()
+                if not numero_id or numero_id == 'nan':
+                    continue
+
+                apellido = str(row.get('apellido(s)', '')).strip()
+                if not apellido or apellido == 'nan':
+                    apellido = str(row.get('apellidos', '')).strip()
+
+                participantes.append({
+                    'nombre': str(row.get('nombre', '')).strip(),
+                    'apellido': apellido,
+                    'numero_id': numero_id,
+                    'correo': str(row.get('dirección de correo', '')).strip(),
+                    'paralelos': paralelos
+                })
+
+            return True, {'participantes': participantes}, []
+        except Exception as e:
+            return False, {}, [f"Error procesando archivo aula virtual: {str(e)}"]
+

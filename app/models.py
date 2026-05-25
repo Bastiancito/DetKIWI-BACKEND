@@ -18,6 +18,11 @@ caso_usuarios = db.Table('caso_usuarios',
     db.Column('user_id', db.Integer, db.ForeignKey('user.user_id'), primary_key=True)
 )
 
+caso_paralelos = db.Table('caso_paralelos',
+    db.Column('caso_id', db.Integer, db.ForeignKey('caso.caso_id'), primary_key=True),
+    db.Column('paralelo_id', db.Integer, db.ForeignKey('paralelo.paralelo_id'), primary_key=True)
+)
+
 
 class Rol(db.Model):
     rol_id = db.Column(db.Integer, primary_key=True)
@@ -35,6 +40,7 @@ class Paralelo(db.Model):
     sede_id = db.Column(db.Integer, db.ForeignKey('sede.sede_id'), nullable=True)
     
     usuarios = db.relationship('User', secondary=user_paralelos, backref='paralelos')
+    casos_asociados = db.relationship('Caso', secondary=caso_paralelos, back_populates='paralelos')
 
 class User(db.Model, UserMixin):
     user_id = db.Column(db.Integer, primary_key=True)
@@ -100,6 +106,7 @@ class Caso(db.Model):
     
     
     involucrados = db.relationship('Estudiante', secondary=caso_estudiantes, backref='casos')
+    paralelos = db.relationship('Paralelo', secondary=caso_paralelos, back_populates='casos_asociados')
     
     usuarios_asignados = db.relationship('User', secondary=caso_usuarios, backref='casos_asignados')
     closed = db.Column(db.Boolean, default=False)
@@ -125,7 +132,6 @@ class Estudiante(db.Model):
     estudiante_id = db.Column(db.Integer, primary_key=True)
     nombre = db.Column(db.String(150), nullable=False)    
     apellido = db.Column(db.String(150), nullable=True)   
-    rol_usm = db.Column(db.String(20), unique=True, nullable=False) 
     paralelo_id = db.Column(db.Integer, db.ForeignKey('paralelo.paralelo_id'), nullable=True)
     sanciones = db.relationship(
         'CasoSancionado',

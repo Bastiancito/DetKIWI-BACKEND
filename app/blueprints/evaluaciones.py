@@ -1,10 +1,21 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.extensions import db
-from app.models import Evaluacion, Reporte, Periodo
+from app.models import Evaluacion, Reporte, Periodo, Paralelo
 from datetime import datetime
 
 evaluaciones_bp = Blueprint('evaluaciones', __name__)
+
+def _serializar_paralelos_caso(caso):
+    return [
+        {
+            'paralelo_id': paralelo.paralelo_id,
+            'sigla_paralelo': paralelo.sigla_paralelo,
+            'sede_id': paralelo.sede_id,
+            'sede_nombre': paralelo.sede.nombre if paralelo.sede else None
+        }
+        for paralelo in caso.paralelos
+    ]
 
 # Payload: {"nombre": "string", "descripcion": "string" (opcional), "fecha_entrega": "string" (opcional ISO format), "periodo_id": int}
 @evaluaciones_bp.route('/CrearEvaluacion', methods=['POST'])
@@ -265,7 +276,6 @@ def obtener_casos_evaluacion(evaluacion_id):
                         'estudiante_id': est.estudiante_id,
                         'nombre': est.nombre,
                         'apellido': est.apellido,
-                        'rol_usm': est.rol_usm,
                         'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
                     }
                     for est in caso.involucrados
@@ -288,6 +298,7 @@ def obtener_casos_evaluacion(evaluacion_id):
                     'closed': caso.closed,
                     'sancion': caso.sancion,
                     'caso_metadata': caso.caso_metadata,
+                    'paralelos': _serializar_paralelos_caso(caso),
                     'estudiantes': estudiantes,
                     'usuarios_asignados': usuarios_asignados,
                     'reporte': {

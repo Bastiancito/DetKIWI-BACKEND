@@ -103,7 +103,6 @@ def crear_caso_sancionado():
                 est.estudiante_id: {
                     'nombre': est.nombre,
                     'apellido': est.apellido,
-                    'rol_usm': est.rol_usm,
                     'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
                 }
                 for est in caso.involucrados

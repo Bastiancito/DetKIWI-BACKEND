@@ -26,7 +26,6 @@ def get_estudiantes():
         'apellido': estudiante.apellido,
         'paralelo_id': estudiante.paralelo_id,
         'paralelo_sigla': estudiante.paralelo.sigla_paralelo if estudiante.paralelo else None,
-        'rol_usm': estudiante.rol_usm,
         'sanciones': [_serializar_sancion(sancion) for sancion in estudiante.sanciones]
     } for estudiante in estudiantes]
     return jsonify(estudiantes_list), 200
@@ -42,7 +41,7 @@ def get_estudiante(estudiante_id):
         'apellido': estudiante.apellido,
         'paralelo_id': estudiante.paralelo_id if estudiante.paralelo_id is not None else None,
         'paralelo_sigla': estudiante.paralelo.sigla_paralelo if estudiante.paralelo else None,
-        'rol_usm': estudiante.rol_usm if estudiante.rol_usm is not None else None
+        
     }
     return jsonify(estudiante_data), 200
 
@@ -56,7 +55,6 @@ def create_estudiante():
     
     nombre = data.get('nombre')
     apellido = data.get('apellido')
-    rol_usm = data.get('rol_usm')
     paralelo_id = data.get('paralelo_id')
 
     if not nombre or not apellido:
@@ -69,7 +67,6 @@ def create_estudiante():
     new_estudiante = Estudiante(
         nombre=nombre,
         apellido=apellido,
-        rol_usm = rol_usm if rol_usm is not None else None,
         paralelo_id = paralelo_id if paralelo_id is not None else None
     )
     
@@ -80,7 +77,6 @@ def create_estudiante():
         'estudiante_id': new_estudiante.estudiante_id,
         'nombre': new_estudiante.nombre,
         'apellido': new_estudiante.apellido,
-        'rol_usm': new_estudiante.rol_usm,
         'paralelo_id': new_estudiante.paralelo_id,
         'paralelo_sigla': new_estudiante.paralelo.sigla_paralelo if new_estudiante.paralelo else None
     }), 201
@@ -100,15 +96,13 @@ def update_estudiante(estudiante_id):
     
     nombre = data.get('nombre')
     apellido = data.get('apellido')
-    rol_usm = data.get('rol_usm')
     paralelo_id = data.get('paralelo_id')
     
     if nombre:
         estudiante.nombre = nombre
     if apellido:
         estudiante.apellido = apellido
-    if rol_usm is not None:
-        estudiante.rol_usm = rol_usm
+    
     if paralelo_id is not None:
         estudiante.paralelo_id = paralelo_id
 
@@ -120,7 +114,6 @@ def update_estudiante(estudiante_id):
         'estudiante_id': estudiante.estudiante_id,
         'nombre': estudiante.nombre,
         'apellido': estudiante.apellido,
-        'rol_usm': estudiante.rol_usm,
         'paralelo_id': estudiante.paralelo_id,
         'paralelo_sigla': estudiante.paralelo.sigla_paralelo if estudiante.paralelo else None
     }), 200

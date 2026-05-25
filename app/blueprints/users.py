@@ -7,7 +7,12 @@ users_bp = Blueprint('users', __name__)
 @users_bp.route('/ObtenerUsuarios', methods=['GET'])
 def get_users():
     users = User.query.all()
-    users_list = [{'user_id': user.user_id, 'username': user.username, 'email': user.email} for user in users]
+    users_list = [{'user_id': user.user_id, 'username': user.username, 'email': user.email, 'paralelos': [{
+        'paralelo_id': p.paralelo_id,
+        'nombre': p.sigla_paralelo,
+        'sede_id': p.sede_id,
+        'sede_nombre': p.sede.nombre if p.sede else None
+    } for p in user.paralelos]} for user in users]
     return jsonify(users_list), 200
 
 @users_bp.route('/ObtenerUsuarioPorId/<int:user_id>', methods=['GET'])
@@ -216,3 +221,129 @@ def update_user(user_id):
         'email': user.email,
         'paralelo_ids': [p.paralelo_id for p in user.paralelos]
     }), 200
+
+ALLOWED_EXTENSIONS = {'xlsx', 'xls', 'csv'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@users_bp.route('/upload_participantes', methods=['POST'])
+@jwt_required()
+def upload_participantes():
+    if 'file' not in request.files:
+        return jsonify({"msg": "No se envió el archivo"}), 400
+    
+    file = request.files['file']
+
+    if file.filename == '' or not allowed_file(file.filename):
+        return jsonify({"msg": "Archivo inválido"}), 400
+
+    try:
+        from utils.excel_processor import ExcelProcessor
+        import pandas as pd
+        processor = ExcelProcessor()
+        
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(file)
+        else:
+            df = pd.read_excel(file)
+            
+        success, processed_data, errors = processor.procesar_aula_virtual(df)
+        if not success:
+            return jsonify({
+                "msg": "Error procesando el archivo",
+                "errores": errors
+            }), 400
+            
+        participantes = processed_data.get('participantes', [])
+        
+        rol_id =  2 # fallback to 2 or existing
+        
+        cache_paralelos = {}
+        for p in Paralelo.query.all():
+            cache_paralelos[p.sigla_paralelo] = p
+            
+        creados = 0
+        actualizados = 0
+        for p_data in participantes:
+            objs_paralelos = []
+            for paralelo_sigla in p_data.get('paralelos', []):
+                if paralelo_sigla not in cache_paralelos:
+                    nuevo_paralelo = Paralelo(sigla_paralelo=paralelo_sigla)
+                    db.session.add(nuevo_paralelo)
+                    db.session.flush() # get ID
+                    cache_paralelos[paralelo_sigla] = nuevo_paralelo
+                objs_paralelos.append(cache_paralelos[paralelo_sigla])
+                
+            if not objs_paralelos:
+                continue
+                
+            paralelo_principal = objs_paralelos[0]
+            
+        
+                
+            # Create/Update User account
+            #diego.bahamondes@usm.cl
+            username = p_data['correo'].split('@')[0] if p_data['correo'] else f"user{p_data['numero_id']}"
+                
+            user = User.query.filter_by(email=p_data['correo']).first() if p_data['correo'] else None
+            if not user:
+                user = User(
+                    username=username,
+                    email=p_data['correo'] if p_data['correo'] else f"{username}@usm.cl",
+                    rol_id=rol_id
+                )
+                
+                # Password = numero_id sin dígito verificador
+                raw_password = p_data['numero_id'].split('-')[0]
+                user.set_password(raw_password)
+                
+                for p_obj in objs_paralelos:
+                    user.paralelos.append(p_obj)
+                    
+                db.session.add(user)
+                creados += 1
+            else:
+                for p_obj in objs_paralelos:
+                    if p_obj not in user.paralelos:
+                        user.paralelos.append(p_obj)
+                actualizados += 1
+                
+        db.session.commit()
+        return jsonify({
+            "msg": "Participantes procesados correctamente",
+            "total_procesados": len(participantes),
+            "usuarios_creados": creados,
+            "usuarios_actualizados": actualizados
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": f"Error interno: {str(e)}"}), 500
+
+@users_bp.route('/debug_upload_participantes', methods=['GET', 'POST'])
+def debug_upload_participantes():
+    """Endpoint para probar cómo se procesaría el archivo de Aula Virtual sin guardar en BD."""
+    try:
+        import os
+        from utils.excel_processor import ExcelProcessor
+        import pandas as pd
+        processor = ExcelProcessor()
+        
+        file_path = "utils/courseid_57985_participants.xlsx"
+        if not os.path.exists(file_path):
+            return jsonify({"msg": f"No se encontró el archivo en {file_path}"}), 404
+            
+        df = pd.read_excel(file_path)
+            
+        success, processed_data, errors = processor.procesar_aula_virtual(df)
+        if not success:
+            return jsonify({
+                "msg": "Error procesando el archivo",
+                "errores": errors
+            }), 400
+            
+        return jsonify(processed_data), 200
+
+    except Exception as e:
+        return jsonify({"msg": f"Error interno: {str(e)}"}), 500

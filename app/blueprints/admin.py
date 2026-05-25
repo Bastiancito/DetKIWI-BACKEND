@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.extensions import db
-from app.models import Rol, User, Sede, Paralelo, Reporte, Caso, Estudiante, Periodo, Evaluacion
+from app.models import Rol, User, Sede, Paralelo, Reporte, Caso, Estudiante, Periodo, Evaluacion, CasoSancionado
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -27,6 +27,14 @@ def limpiar_tabla(tabla):
                 "tablas_disponibles": list(tablas_disponibles.keys())
             }), 404
         
+        if tabla == 'caso':
+            db.session.execute(db.text('DELETE FROM caso_paralelos'))
+            db.session.execute(db.text('DELETE FROM caso_estudiantes'))
+            db.session.execute(db.text('DELETE FROM caso_usuarios'))
+        elif tabla == 'paralelo':
+            db.session.execute(db.text('DELETE FROM caso_paralelos'))
+            db.session.execute(db.text('DELETE FROM user_paralelos'))
+
         modelo = tablas_disponibles[tabla]
         registros_eliminados = modelo.query.delete()
         db.session.commit()
@@ -64,6 +72,9 @@ def limpiar_todo():
         estudiantes = Estudiante.query.delete()
         resultado['estudiantes'] = estudiantes
         
+        db.session.execute(db.text('DELETE FROM caso_paralelos'))
+        resultado['caso_paralelos'] = 'limpiado'
+
         db.session.execute(db.text('DELETE FROM user_paralelos'))
         resultado['user_paralelos'] = 'limpiado'
         
@@ -75,12 +86,20 @@ def limpiar_todo():
         
         paralelos = Paralelo.query.delete()
         resultado['paralelos'] = paralelos
-        
+
+        '''
         sedes = Sede.query.delete()
         resultado['sedes'] = sedes
         
         roles = Rol.query.delete()
         resultado['roles'] = roles
+        '''
+
+        db.session.execute(db.text('DELETE FROM caso_estudiantes'))
+        resultado['caso_estudiantes'] = 'limpiado'
+
+        casos_sancionados = CasoSancionado.query.delete()
+        resultado['casos_sancionados'] = casos_sancionados
         
         db.session.commit()
         
@@ -105,6 +124,9 @@ def limpiar_casos_reportes():
         casos = Caso.query.delete()
         resultado['casos'] = casos
         
+        db.session.execute(db.text('DELETE FROM caso_paralelos'))
+        resultado['caso_paralelos'] = 'limpiado'
+
         reportes = Reporte.query.delete()
         resultado['reportes'] = reportes
         
@@ -119,6 +141,87 @@ def limpiar_casos_reportes():
         db.session.rollback()
         return jsonify({
             "error": "Error al limpiar casos y reportes",
+            "detalle": str(e)
+        }), 500
+
+
+@admin_bp.route('/limpiar-importacion', methods=['DELETE'])
+@jwt_required()
+def limpiar_importacion():
+    """Elimina datos creados por procesos de importación para poder reimportar desde cero.
+    - Elimina casos, reportes, sancionados, estudiantes.
+    - Elimina relaciones en `user_paralelos`, `caso_estudiantes`, `caso_usuarios`.
+    - Elimina users con `rol_id == 2` (participantes) y paralelos sin sede (sede_id IS NULL).
+    """
+    try:
+        resultado = {}
+
+        # proteger al usuario que ejecuta el endpoint
+        current_user_id = None
+        try:
+            current_user_id = int(get_jwt_identity())
+        except Exception:
+            current_user_id = None
+
+        # Borrar primero las relaciones para evitar violaciones de FK
+        db.session.execute(db.text('DELETE FROM caso_paralelos'))
+        resultado['caso_paralelos'] = 'limpiado'
+
+        db.session.execute(db.text('DELETE FROM caso_estudiantes'))
+        resultado['caso_estudiantes'] = 'limpiado'
+
+        db.session.execute(db.text('DELETE FROM caso_usuarios'))
+        resultado['caso_usuarios'] = 'limpiado'
+
+        # Eliminar relaciones user_paralelos (excluyendo al usuario actual más abajo)
+        # Se ejecuta aquí por orden lógico; la eliminación de usuarios tendrá en cuenta al current_user_id
+
+        # Para poder eliminar TODOS los paralelos, se deben quitar TODAS las referencias
+        # en user_paralelos (incluyendo las del usuario actual).
+        db.session.execute(db.text('DELETE FROM user_paralelos'))
+        resultado['user_paralelos'] = 'limpiado_total'
+
+        # Ahora se pueden borrar los objetos relacionados a casos en orden correcto
+        # Primero borrar sancionados (referencian caso), luego casos y reportes
+        resultado['casos_sancionados'] = CasoSancionado.query.delete()
+
+        resultado['casos'] = Caso.query.delete()
+        resultado['reportes'] = Reporte.query.delete()
+
+        resultado['estudiantes'] = Estudiante.query.delete()
+
+        # Elimina solo usuarios con rol_id == 2 (participantes/estudiantes importados), pero preserva al usuario actual
+        try:
+            if current_user_id is not None:
+                users_deleted = User.query.filter(User.rol_id == 2, User.user_id != current_user_id).delete(synchronize_session=False)
+            else:
+                users_deleted = User.query.filter(User.rol_id == 2).delete(synchronize_session=False)
+        except Exception:
+            # Fallback seguro: no borrar al usuario actual
+            if current_user_id is not None:
+                users_deleted = User.query.filter(User.user_id != current_user_id).delete(synchronize_session=False)
+            else:
+                users_deleted = User.query.delete()
+        resultado['users_deleted_rol_2'] = users_deleted
+
+        # Eliminar paralelos sin sede (creados por importaciones)
+        paralelos_deleted = Paralelo.query.filter(Paralelo.sede_id == None).delete(synchronize_session=False)
+        resultado['paralelos_deleted_sin_sede'] = paralelos_deleted
+        paralelos_deleted_total = Paralelo.query.delete()
+        resultado['paralelos_deleted_total'] = paralelos_deleted_total
+        
+
+        db.session.commit()
+
+        return jsonify({
+            "message": "✅ Importación limpiada (casos, usuarios y enlaces a paralelos)",
+            "registros_eliminados": resultado
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "error": "Error al limpiar datos de importación",
             "detalle": str(e)
         }), 500
 
@@ -172,6 +275,9 @@ def estadisticas_db():
         
         result_casos_usr = db.session.execute(db.text('SELECT COUNT(*) FROM caso_usuarios')).scalar()
         estadisticas['caso_usuarios'] = result_casos_usr
+
+        result_casos_par = db.session.execute(db.text('SELECT COUNT(*) FROM caso_paralelos')).scalar()
+        estadisticas['caso_paralelos'] = result_casos_par
         
         return jsonify({
             "estadisticas": estadisticas,

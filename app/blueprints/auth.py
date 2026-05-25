@@ -36,7 +36,9 @@ def login():
         "user": {
             "id": user.user_id,
             "username": user.username,
-            "email": user.email
+            "email": user.email,
+            "rol_id": user.rol_id,
+            "paralelos": [{"paralelo_id": p.paralelo_id, "sigla_paralelo": p.sigla_paralelo} for p in user.paralelos]
         }
     }), 200
 
@@ -81,6 +83,7 @@ def register():
                 "id": nuevo_usuario.user_id,
                 "username": nuevo_usuario.username,
                 "email": nuevo_usuario.email
+
             }
         }), 201
         

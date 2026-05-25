@@ -1,4 +1,5 @@
 from datetime import datetime
+from unittest import case
 
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
@@ -6,6 +7,17 @@ from app.extensions import db
 from app.models import Caso, CasoSancionado, Reporte, Estudiante, User, Paralelo, Sede, Evaluacion, Periodo, caso_usuarios, caso_estudiantes
 
 casos_bp = Blueprint('casos', __name__)
+
+def _serializar_paralelos_caso(caso):
+    return [
+        {
+            'paralelo_id': paralelo.paralelo_id,
+            'sigla_paralelo': paralelo.sigla_paralelo,
+            'sede_id': paralelo.sede_id,
+            'sede_nombre': paralelo.sede.nombre if paralelo.sede else None
+        }
+        for paralelo in caso.paralelos
+    ]
 
 @casos_bp.route('/ObtenerCasosPorReporteId/<int:reporte_id>', methods=['GET'])
 @jwt_required()
@@ -24,7 +36,6 @@ def obtener_casos_reporte(reporte_id):
                     'estudiante_id': est.estudiante_id,
                     'nombre': est.nombre,
                     'apellido': est.apellido,
-                    'rol_usm': est.rol_usm,
                     'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
                 }
                 for est in caso.involucrados
@@ -47,6 +58,7 @@ def obtener_casos_reporte(reporte_id):
                 'closed': caso.closed,
                 'sancion': caso.sancion,
                 'caso_metadata': caso.caso_metadata,
+                'paralelos': _serializar_paralelos_caso(caso),
                 'estudiantes': estudiantes,
                 'usuarios_asignados': usuarios_asignados
             })
@@ -81,7 +93,6 @@ def obtener_caso_detalle(caso_id):
                 'estudiante_id': est.estudiante_id,
                 'nombre': est.nombre,
                 'apellido': est.apellido,
-                'rol_usm': est.rol_usm,
                 'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
             }
             for est in caso.involucrados
@@ -106,6 +117,7 @@ def obtener_caso_detalle(caso_id):
             'sancion': caso.sancion,
             'caso_metadata': caso.caso_metadata,
             'comentarios_profes': caso.comentarios_profes if caso.comentarios_profes else [],
+            'paralelos': _serializar_paralelos_caso(caso),
             'estudiantes': estudiantes,
             'usuarios_asignados': usuarios_asignados
         }), 200
@@ -184,7 +196,6 @@ def obtener_mis_casos(evaluacion_id=None):
                     'estudiante_id': est.estudiante_id,
                     'nombre': est.nombre,
                     'apellido': est.apellido,
-                    'rol_usm': est.rol_usm,
                     'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
                 }
                 for est in caso.involucrados
@@ -199,6 +210,7 @@ def obtener_mis_casos(evaluacion_id=None):
                 'closed': caso.closed,
                 'sancion': caso.sancion,
                 'caso_metadata': caso.caso_metadata,
+                'paralelos': _serializar_paralelos_caso(caso),
                 'estudiantes': estudiantes
             })
         
@@ -213,9 +225,9 @@ def obtener_mis_casos(evaluacion_id=None):
 @jwt_required()
 def obtener_casos_por_sede_evaluacion(sede_id, evaluacion_id):
     try:
-        casos = Caso.query.join(Reporte).join(Evaluacion).join(Periodo).join(Paralelo).join(Sede).filter(
-            Sede.sede_id == sede_id,
-            Evaluacion.evaluacion_id == evaluacion_id
+        casos = Caso.query.filter(
+            Caso.evaluacion_id == evaluacion_id,
+            Caso.paralelos.any(Paralelo.sede_id == sede_id)
         ).all()
 
         result = []
@@ -225,7 +237,6 @@ def obtener_casos_por_sede_evaluacion(sede_id, evaluacion_id):
                     'estudiante_id': est.estudiante_id,
                     'nombre': est.nombre,
                     'apellido': est.apellido,
-                    'rol_usm': est.rol_usm,
                     'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
                 }
                 for est in caso.involucrados
@@ -240,6 +251,7 @@ def obtener_casos_por_sede_evaluacion(sede_id, evaluacion_id):
                 'closed': caso.closed,
                 'sancion': caso.sancion,
                 'caso_metadata': caso.caso_metadata,
+                'paralelos': _serializar_paralelos_caso(caso),
                 'estudiantes': estudiantes
             })
         
@@ -256,7 +268,7 @@ def obtener_casos_por_paralelo_evaluacion(paralelo_id, evaluacion_id):
     try:
         casos = Caso.query.filter(
             Caso.evaluacion_id == evaluacion_id,
-            Caso.involucrados.any(Estudiante.paralelo_id == paralelo_id)
+            Caso.paralelos.any(Paralelo.paralelo_id == paralelo_id)
         ).all()
 
         result = []
@@ -266,7 +278,6 @@ def obtener_casos_por_paralelo_evaluacion(paralelo_id, evaluacion_id):
                     'estudiante_id': est.estudiante_id,
                     'nombre': est.nombre,
                     'apellido': est.apellido,
-                    'rol_usm': est.rol_usm,
                     'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
                 }
                 for est in caso.involucrados
@@ -281,6 +292,7 @@ def obtener_casos_por_paralelo_evaluacion(paralelo_id, evaluacion_id):
                 'closed': caso.closed,
                 'sancion': caso.sancion,
                 'caso_metadata': caso.caso_metadata,
+                'paralelos': _serializar_paralelos_caso(caso),
                 'estudiantes': estudiantes,
                 'usuarios_asignados': [
                     {
@@ -367,6 +379,18 @@ def obtener_stats_casos_por_paralelos_evaluacion_sede(evaluacion_id, sede_id):
 
         result = []
         for paralelo_id, sigla_paralelo, total_casos, total_casos_pendientes in stats:
+            # Obtener el encargado del paralelo (primer usuario asignado al paralelo)
+            paralelo_obj = Paralelo.query.get(paralelo_id)
+            usuario_encargado = None
+            if paralelo_obj and paralelo_obj.usuarios:
+                u = paralelo_obj.usuarios[0]
+                usuario_encargado = {
+                    'user_id': u.user_id,
+                    'username': u.username,
+                    'email': u.email
+                }
+
+            # También mantener la lista de usuarios asignados a casos como fallback
             usuarios_asignados = db.session.query(User).select_from(User).join(
                 caso_usuarios,
                 caso_usuarios.c.user_id == User.user_id
@@ -383,7 +407,7 @@ def obtener_stats_casos_por_paralelos_evaluacion_sede(evaluacion_id, sede_id):
                 Estudiante.paralelo_id == paralelo_id,
                 Caso.evaluacion_id == evaluacion_id
             ).distinct().all()
-            
+
             usuarios_list = [
                 {
                     'user_id': user.user_id,
@@ -392,15 +416,22 @@ def obtener_stats_casos_por_paralelos_evaluacion_sede(evaluacion_id, sede_id):
                 }
                 for user in usuarios_asignados
             ]
-            
-            result.append({
+
+            entry = {
                 'paralelo': sigla_paralelo,
                 'paralelo_id': paralelo_id,
                 'total_casos': total_casos,
                 'total_casos_pendientes': total_casos_pendientes,
-                'total_casos_resueltos': total_casos - total_casos_pendientes,
-                'usuarios_asignados': usuarios_list
-            })
+                'total_casos_resueltos': total_casos - total_casos_pendientes
+            }
+
+            if usuario_encargado:
+                entry['usuario'] = usuario_encargado
+
+            # mantener por compatibilidad
+            entry['usuarios_asignados'] = usuarios_list
+
+            result.append(entry)
 
         return jsonify(result), 200
     except Exception as e:
@@ -473,6 +504,51 @@ def obtener_stats_casos_por_paralelos_evaluacion(evaluacion_id):
     except Exception as e:
         return jsonify({"msg": "Error al obtener estadísticas de casos por paralelos y evaluación", "error": str(e)}), 500
 
+
+@casos_bp.route('/ObtenerStatsCasosPorSedesAndEvaluacionId/<int:evaluacion_id>', methods=['GET'])
+@jwt_required()
+def obtener_stats_casos_por_sedes_evaluacion(evaluacion_id):
+    try:
+        # Agrega estadísticas agregadas por sede para una evaluación (batch)
+        stats = db.session.query(
+            Sede.sede_id,
+            Sede.nombre,
+            db.func.count(db.distinct(Caso.caso_id)).label('total_casos'),
+            db.func.count(
+                db.distinct(
+                    db.case((Caso.closed.is_(False), Caso.caso_id), else_=None)
+                )
+            ).label('total_casos_pendientes')
+        ).select_from(Sede).join(
+            Paralelo,
+            Paralelo.sede_id == Sede.sede_id
+        ).join(
+            Estudiante,
+            Estudiante.paralelo_id == Paralelo.paralelo_id
+        ).join(
+            caso_estudiantes,
+            caso_estudiantes.c.estudiante_id == Estudiante.estudiante_id
+        ).join(
+            Caso,
+            Caso.caso_id == caso_estudiantes.c.caso_id
+        ).filter(
+            Caso.evaluacion_id == evaluacion_id
+        ).group_by(Sede.sede_id, Sede.nombre).all()
+
+        result = []
+        for sede_id, nombre, total_casos, total_casos_pendientes in stats:
+            result.append({
+                'sede_id': sede_id,
+                'nombre': nombre,
+                'total_casos': total_casos,
+                'total_casos_pendientes': total_casos_pendientes,
+                'total_casos_resueltos': (total_casos - total_casos_pendientes) if total_casos is not None else 0
+            })
+
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"msg": "Error al obtener estadísticas de casos por sedes y evaluación", "error": str(e)}), 500
+
 @casos_bp.route('/AgregarComentario/<int:caso_id>', methods=['POST'])
 @jwt_required()
 def agregar_comentario_caso(caso_id):
@@ -488,7 +564,10 @@ def agregar_comentario_caso(caso_id):
         
         caso = Caso.query.join(Reporte).filter(
             Caso.caso_id == caso_id,
-            Reporte.user_id == current_user_id
+            db.or_(
+                Reporte.user_id == current_user_id,
+                Caso.usuarios_asignados.any(User.user_id == current_user_id)
+            )
         ).first()
         
         if not caso:
@@ -515,6 +594,34 @@ def agregar_comentario_caso(caso_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({"msg": "Error al agregar comentario", "error": str(e)}), 500
+
+
+@casos_bp.route('/CambiarDecision/<int:caso_id>', methods=['POST'])
+@jwt_required()
+def cambiar_decision(caso_id):
+    try:
+        
+        caso = Caso.query.get(caso_id)
+        if not caso:
+            return jsonify({"msg": "Caso no encontrado"}), 404
+        if caso.closed != True:
+            return jsonify({"msg": "Solo se pueden cambiar decisiones de casos cerrados"}), 400
+        match caso.sancion:
+            case True:
+                caso.sancion = False
+            case False:
+                caso.sancion = True
+
+        
+        db.session.commit()
+        
+        return jsonify({
+            "msg": "Decisión cambiada correctamente",
+            "caso_id": caso.caso_id
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error al cambiar decisión", "error": str(e)}), 500
 
 @casos_bp.route('/filtrar', methods=['GET'])
 @jwt_required()
@@ -544,7 +651,6 @@ def filtrar_casos():
                     'estudiante_id': est.estudiante_id,
                     'nombre': est.nombre,
                     'apellido': est.apellido,
-                    'rol_usm': est.rol_usm,
                     'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
                 }
                 for est in caso.involucrados
@@ -629,7 +735,10 @@ def marcar_caso_revisado(caso_id):
         
         caso = Caso.query.join(Reporte).filter(
             Caso.caso_id == caso_id,
-            Reporte.user_id == current_user_id
+            db.or_(
+                Reporte.user_id == current_user_id,
+                Caso.usuarios_asignados.any(User.user_id == current_user_id)
+            )
         ).first()
         accion = data.get('sancion')
         descripcion_sancion = data.get('descripcion_sancion', 'Amonestación por plagio')
@@ -640,19 +749,23 @@ def marcar_caso_revisado(caso_id):
         if accion == True:
             caso.sancion = True
             estudiantes_involucrados = {}
+            usuarios_involucrados = {}
             for est in caso.involucrados:
                 estudiantes_involucrados[est.estudiante_id] = {
                     'nombre': est.nombre,
                     'apellido': est.apellido,
-                    'rol_usm': est.rol_usm,
                     'paralelo': est.paralelo.sigla_paralelo if est.paralelo else None
                 }
                 est.num_sanciones = (est.num_sanciones or 0) + 1
+            for usuario in caso.usuarios_asignados:
+                usuarios_involucrados[usuario.user_id] = {
+                    'nombre': usuario.username,
+                }
 
             sancion = CasoSancionado(
                 caso_id=caso.caso_id,
                 estudiantes_involucrados=estudiantes_involucrados,
-
+                profesores_involucrados=usuarios_involucrados,
                 descripcion_sancion=descripcion_sancion
             )
             db.session.add(sancion)
@@ -665,3 +778,35 @@ def marcar_caso_revisado(caso_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({"msg": "Error al marcar caso como revisado", "error": str(e)}), 500
+    
+@casos_bp.route('/AsignarCasosAParalelo/<int:paralelo_id>', methods=['POST'])
+@jwt_required()
+def asignar_casos_a_paralelo(paralelo_id):
+    try:
+        current_user_id = int(get_jwt_identity())
+        data = request.get_json(silent=True) or {}
+        caso_ids = data.get('caso_ids', [])
+        
+        if not caso_ids or not isinstance(caso_ids, list):
+            return jsonify({"msg": "Se requiere caso_ids como lista"}), 400
+        
+        paralelo = Paralelo.query.get(paralelo_id)
+        if not paralelo:
+            return jsonify({"msg": "Paralelo no encontrado"}), 404
+        
+        casos = Caso.query.filter(Caso.caso_id.in_(caso_ids)).all()
+        
+        for caso in casos:
+            for est in caso.involucrados:
+                est.paralelo_id = paralelo_id
+        
+        db.session.commit()
+        
+        return jsonify({
+            "msg": f"Casos asignados al paralelo {paralelo.sigla_paralelo} correctamente",
+            "paralelo_id": paralelo.paralelo_id,
+            "caso_ids_asignados": [caso.caso_id for caso in casos]
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error al asignar casos a paralelo", "error": str(e)}), 500

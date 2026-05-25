@@ -54,12 +54,12 @@ def create_paralelo():
     sede_id = data.get('sede_id')
     usuario = data.get('usuario')
     
-    if not nombre or not sede_id:
-        return jsonify({"error": "Nombre y Sede son requeridos"}), 400
+    if not nombre:
+        return jsonify({"error": "Nombre es requerido"}), 400
     
     sede = Sede.query.get(sede_id)
     if not sede:
-        return jsonify({"error": "Sede no encontrada"}), 404
+        pass
     
     existing_paralelo = Paralelo.query.filter_by(sigla_paralelo=nombre, sede_id=sede_id).first()
     if existing_paralelo:
@@ -67,7 +67,7 @@ def create_paralelo():
     
     new_paralelo = Paralelo(
         sigla_paralelo=nombre,
-        sede_id=sede_id
+        sede_id=sede_id if sede_id else None
     )
     
     
@@ -93,6 +93,37 @@ def create_paralelo():
         response['usuario_nombre'] = user.username
     
     return jsonify(response), 201
+
+
+@paralelos_bp.route('/VincularSedeAParalelo/<int:paralelo_id>', methods=['POST'])
+def vincular_sede_paralelo(paralelo_id):
+    data = request.get_json()
+    
+    if not data:
+        return jsonify({"error": "Se requiere JSON en el body"}), 400
+    
+    sede_id = data.get('sede_id')
+    
+    if not sede_id:
+        return jsonify({"error": "sede_id es requerido"}), 400
+    
+    paralelo = Paralelo.query.get(paralelo_id)
+    if not paralelo:
+        return jsonify({"error": "Paralelo no encontrado"}), 404
+    
+    sede = Sede.query.get(sede_id)
+    if not sede:
+        return jsonify({"error": "Sede no encontrada"}), 404
+    
+    paralelo.sede_id = sede_id
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Sede vinculada al paralelo exitosamente',
+        'paralelo_id': paralelo.paralelo_id,
+        'sede_id': sede.sede_id
+    }), 200
+
 
 @paralelos_bp.route('/CrearListadoDeParalelos', methods=['POST'])
 def create_listado_paralelos():
