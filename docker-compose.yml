@@ -9,8 +9,9 @@ services:
     volumes:
       - .:/app
     environment:
-      - DATABASE_URL=postgresql://kiwi_user:kiwi_pass@db:5432/kiwi_db
-      - JWT_ACCESS_TOKEN_EXPIRES_MINUTES=30
+      - USE_PROD_ENV=false
+      - DATABASE_URL_DEV=postgresql://kiwi_user:kiwi_pass@db:5432/kiwi_db
+      - JWT_ACCESS_TOKEN_EXPIRES_MINUTES=20160
       - JWT_REFRESH_TOKEN_EXPIRES_DAYS=7
     depends_on:
       - db

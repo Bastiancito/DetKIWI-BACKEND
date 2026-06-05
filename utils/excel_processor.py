@@ -140,7 +140,9 @@ class ExcelProcessor:
         return None
 
     def procesar_archivo_excel(self, file_path_or_dataframe) -> Tuple[bool, Dict, List[str]]:
+    
         try:
+            # 1. Cargar el DataFrame
             if isinstance(file_path_or_dataframe, str):
                 df = pd.read_excel(file_path_or_dataframe, header=None) if file_path_or_dataframe.endswith('.xlsx') else pd.read_csv(file_path_or_dataframe, header=None)
             else:
@@ -149,9 +151,10 @@ class ExcelProcessor:
                     df = pd.concat([pd.DataFrame([df.columns]), df], ignore_index=True)
                     df.columns = range(df.shape[1])
 
-            url_padre = self._extraer_url_padre_moss(df)
-            header_idx = -1
+            df_raw = df.copy()
 
+            # 2. Identificar el índice de las cabeceras
+            header_idx = -1
             for idx, row in df.iterrows():
                 row_lower = [str(x).strip().lower() for x in row.values]
                 if 'estudiante1' in row_lower and ('estudiante2' in row_lower or 'paralelo1' in row_lower):
@@ -161,83 +164,132 @@ class ExcelProcessor:
             if header_idx == -1:
                 return False, {}, ["No se encontraron las cabeceras requeridas ('estudiante1', 'estudiante2') en el archivo MOSS"]
 
+            # 3. Limpiar y estructurar el DataFrame base
             df.columns = df.iloc[header_idx].astype(str).str.strip().str.lower()
             df = df.iloc[header_idx + 1:].reset_index(drop=True)
             df = df.dropna(how='all')
 
-            match_entries, primer_paralelo_por_estudiante = self._cargar_match_entries_moss(url_padre) if url_padre else ([], {})
+            # 4. BÚSQUEDA DINÁMICA DE LA COLUMNA DE LINKS DIRECTOS
+            # Buscamos una columna que contenga URLs de "match" en sus primeras filas válidas
+            columna_link_directo = None
+            for col in df.columns:
+                muestras = df[col].dropna().astype(str).head(1) # Tomamos 1 fila de muestra
+                if any('match' in val.lower() and 'http' in val.lower() for val in muestras):
+                    columna_link_directo = col
+                    break
 
-            cases_data = []
-            for index, row in df.iterrows():
-                est1_name = str(row.get('estudiante1', '')).strip()
-                est2_name = str(row.get('estudiante2', '')).strip()
-
-                if not est1_name or est1_name == 'nan' or not est2_name or est2_name == 'nan':
-                    continue
-
-                if self._normalizar_texto(est1_name) == self._normalizar_texto(est2_name):
-                    continue
-
-                estudiante1 = {
-                    'rol': '',
-                    'nombre': est1_name,
-                    'apellido': '',
-                    'paralelo': str(row.get('paralelo1', '')).strip()
-                }
-
-                estudiante2 = {
-                    'rol': '',
-                    'nombre': est2_name,
-                    'apellido': '',
-                    'paralelo': str(row.get('paralelo2', '')).strip()
-                }
-
-                similitud = 0.0
-                if '%' in df.columns:
-                    try:
-                        similitud = float(row['%'])
-                    except Exception:
-                        pass
-
-                caso_data = {
-                    'estudiante1': estudiante1,
-                    'estudiante2': estudiante2,
-                    'similitud': similitud,
-                    'lineas': 0,
-                    'url_moss': url_padre,
-                    'fila_original': header_idx + index + 2
-                }
-
-                match_entry = self._buscar_match_moss(caso_data, match_entries)
-                if match_entry:
-                    estudiante1['paralelo'] = primer_paralelo_por_estudiante.get(
-                        match_entry['student1_key'],
-                        estudiante1['paralelo']
-                    )
-                    estudiante2['paralelo'] = primer_paralelo_por_estudiante.get(
-                        match_entry['student2_key'],
-                        estudiante2['paralelo']
-                    )
-                    caso_data['url_moss'] = match_entry['match_url']
-                    caso_data['lineas'] = match_entry['lines']
-
-                cases_data.append(caso_data)
-
-            result = {
-                'casos_validos': cases_data,
-                'casos_invalidos': [],
-                'total_filas_procesadas': len(cases_data),
-                'casos_validos_count': len(cases_data),
-                'casos_invalidos_count': 0,
-                'url_padre_moss': url_padre,
-                'matches_encontrados': len(match_entries),
-                'primer_paralelo_por_estudiante': primer_paralelo_por_estudiante
-            }
-
-            return True, result, []
+            # 5. Enrutamiento automático
+            if columna_link_directo:
+                # Si encontramos la columna, le pasamos el nombre exacto a la función
+                return self._procesar_moss_directo(df, header_idx, columna_link_directo)
+            else:
+                # Si no hay links directos, asumimos que necesitamos hacer scraping
+                return self._procesar_moss_con_scraping(df, df_raw, header_idx)
 
         except Exception as e:
             return False, {}, [f"Error procesando archivo MOSS: {str(e)}"]
+        
+    def _procesar_moss_directo(self, df: pd.DataFrame, header_idx: int, columna_link_directo: str) -> Tuple[bool, Dict, List[str]]:
+        """Procesa el archivo usando los enlaces MOSS extraídos de la columna detectada dinámicamente."""
+        cases_data = []
+        
+        for index, row in df.iterrows():
+            est1_name = str(row.get('estudiante1', '')).strip()
+            est2_name = str(row.get('estudiante2', '')).strip()
+
+            if not est1_name or est1_name == 'nan' or not est2_name or est2_name == 'nan':
+                continue
+
+            if self._normalizar_texto(est1_name) == self._normalizar_texto(est2_name):
+                continue
+
+            similitud = 0.0
+            if '%' in df.columns:
+                try: similitud = float(row['%'])
+                except Exception: pass
+
+            # Usamos el nombre de la columna detectada para extraer la URL
+            url_match = str(row.get(columna_link_directo, '')).strip()
+
+            caso_data = {
+                'estudiante1': {'rol': '', 'nombre': est1_name, 'apellido': '', 'paralelo': str(row.get('paralelo1', '')).strip()},
+                'estudiante2': {'rol': '', 'nombre': est2_name, 'apellido': '', 'paralelo': str(row.get('paralelo2', '')).strip()},
+                'similitud': similitud,
+                'lineas': 0,
+                'url_moss': url_match, # Asignación dinámica
+                'fila_original': header_idx + index + 2
+            }
+            cases_data.append(caso_data)
+
+        result = {
+            'casos_validos': cases_data,
+            'casos_invalidos': [],
+            'total_filas_procesadas': len(cases_data),
+            'casos_validos_count': len(cases_data),
+            'casos_invalidos_count': 0,
+            'url_padre_moss': None,
+            'matches_encontrados': len(cases_data),
+            'primer_paralelo_por_estudiante': {}
+        }
+        
+        return True, result, []
+    
+    def _procesar_moss_con_scraping(self, df: pd.DataFrame, df_raw: pd.DataFrame, header_idx: int) -> Tuple[bool, Dict, List[str]]:
+        """Procesa el archivo conectándose a la URL de MOSS para enriquecer los datos de las coincidencias."""
+        url_padre = self._extraer_url_padre_moss(df_raw)
+        match_entries, primer_paralelo_por_estudiante = self._cargar_match_entries_moss(url_padre) if url_padre else ([], {})
+
+        cases_data = []
+        
+        for index, row in df.iterrows():
+            est1_name = str(row.get('estudiante1', '')).strip()
+            est2_name = str(row.get('estudiante2', '')).strip()
+
+            if not est1_name or est1_name == 'nan' or not est2_name or est2_name == 'nan':
+                continue
+
+            if self._normalizar_texto(est1_name) == self._normalizar_texto(est2_name):
+                continue
+
+            estudiante1 = {'rol': '', 'nombre': est1_name, 'apellido': '', 'paralelo': str(row.get('paralelo1', '')).strip()}
+            estudiante2 = {'rol': '', 'nombre': est2_name, 'apellido': '', 'paralelo': str(row.get('paralelo2', '')).strip()}
+
+            similitud = 0.0
+            if '%' in df.columns:
+                try: similitud = float(row['%'])
+                except Exception: pass
+
+            caso_data = {
+                'estudiante1': estudiante1,
+                'estudiante2': estudiante2,
+                'similitud': similitud,
+                'lineas': 0,
+                'url_moss': url_padre,
+                'fila_original': header_idx + index + 2
+            }
+
+            # Cruce de datos con la información web extraída
+            match_entry = self._buscar_match_moss(caso_data, match_entries)
+            if match_entry:
+                estudiante1['paralelo'] = primer_paralelo_por_estudiante.get(match_entry['student1_key'], estudiante1['paralelo'])
+                estudiante2['paralelo'] = primer_paralelo_por_estudiante.get(match_entry['student2_key'], estudiante2['paralelo'])
+                caso_data['url_moss'] = match_entry['match_url']
+                caso_data['lineas'] = match_entry['lines']
+
+            cases_data.append(caso_data)
+
+        result = {
+            'casos_validos': cases_data,
+            'casos_invalidos': [],
+            'total_filas_procesadas': len(cases_data),
+            'casos_validos_count': len(cases_data),
+            'casos_invalidos_count': 0,
+            'url_padre_moss': url_padre,
+            'matches_encontrados': len(match_entries),
+            'primer_paralelo_por_estudiante': primer_paralelo_por_estudiante
+        }
+        
+        return True, result, []
 
     def procesar_aula_virtual(self, file_path_or_dataframe) -> Tuple[bool, Dict, List[str]]:
         try:

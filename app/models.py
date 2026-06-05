@@ -81,7 +81,7 @@ class Evaluacion(db.Model):
     nombre = db.Column(db.String(100), nullable=False)
     descripcion = db.Column(db.String(500), nullable=True)
     fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow)
-    fecha_entrega = db.Column(db.DateTime, nullable=True)
+    fecha_entrega = db.Column(db.DateTime, nullable=True, default = None)
     periodo_id = db.Column(db.Integer, db.ForeignKey('periodo.periodo_id'), nullable=False)
     activo = db.Column(db.Boolean, default=True)
     
@@ -93,6 +93,7 @@ class Reporte(db.Model):
     fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), nullable=False)
     evaluacion_id = db.Column(db.Integer, db.ForeignKey('evaluacion.evaluacion_id'), nullable=False)
+    url_moss = db.Column(db.String(500), nullable=True)
     activo = db.Column(db.Boolean, default=True)
     casos = db.relationship('Caso', backref='reporte', lazy=True)
 
@@ -110,10 +111,13 @@ class Caso(db.Model):
     
     usuarios_asignados = db.relationship('User', secondary=caso_usuarios, backref='casos_asignados')
     closed = db.Column(db.Boolean, default=False)
+    in_process = db.Column(db.Boolean, default=False)
     sancion = db.Column(db.Boolean, nullable=True)
     caso_metadata = db.Column(db.JSON, nullable=True)
+    motivo_sancion = db.Column(db.JSON, nullable=True)
     evaluacion_id = db.Column(db.Integer, db.ForeignKey('evaluacion.evaluacion_id'), nullable=True)
     comentarios_profes = db.Column(db.JSON, nullable=True)
+    decisiones_profes = db.Column(db.JSON, nullable=True)
     @property
     def evaluacion(self):
         """Acceso directo a la evaluación del caso via reporte"""
@@ -124,9 +128,13 @@ class CasoSancionado(db.Model):
     caso_id = db.Column(db.Integer, db.ForeignKey('caso.caso_id'), nullable=False)
     estudiantes_involucrados = db.Column(db.JSON, nullable=False)
     profesores_involucrados = db.Column(db.JSON, nullable=True)
-
-    descripcion_sancion = db.Column(db.String(200), nullable=False)
+    comentarios_caso = db.Column(db.JSON, nullable=True)
+    # `reason` is now a JSON mapping keyed by user_id (string) -> { 'motivo': str, 'descripcion': str }
+    reason = db.Column(db.JSON, nullable=True)
     fecha_sancion = db.Column(db.DateTime, default=datetime.utcnow)
+    cancelado = db.Column(db.Boolean, default=False)
+    fecha_cancelacion = db.Column(db.DateTime, nullable=True)
+    cancelado_por = db.Column(db.Integer, nullable=True)
 
 class Estudiante(db.Model):
     estudiante_id = db.Column(db.Integer, primary_key=True)

@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, create_access_token, create_refresh_token
+from flask_jwt_extended import jwt_required, create_access_token, create_refresh_token, get_jwt_identity
 from app.models import *
 from app.extensions import db
 
@@ -25,6 +25,35 @@ def get_paralelos():
                 'email': usuario.email
             }
         
+        paralelos_list.append(paralelo_data)
+    return jsonify(paralelos_list), 200
+
+@paralelos_bp.route('/ObtenerParalelosPorUserId', methods=['GET'])
+@jwt_required()
+def get_paralelos_por_usuario():
+    user_id = int(get_jwt_identity())
+    usuario = User.query.get(user_id)
+    if not usuario:
+        return jsonify({"error": "Usuario no encontrado"}), 404
+
+    paralelos = usuario.paralelos
+    paralelos_list = []
+    for paralelo in paralelos:
+        paralelo_data = {
+            'paralelo_id': paralelo.paralelo_id,
+            'nombre': paralelo.sigla_paralelo,
+            'sede_id': paralelo.sede_id,
+            'sede_nombre': paralelo.sede.nombre if paralelo.sede else None
+        }
+
+        if paralelo.usuarios:
+            usuario_asignado = paralelo.usuarios[0]
+            paralelo_data['usuario'] = {
+                'user_id': usuario_asignado.user_id,
+                'username': usuario_asignado.username,
+                'email': usuario_asignado.email
+            }
+
         paralelos_list.append(paralelo_data)
     return jsonify(paralelos_list), 200
 

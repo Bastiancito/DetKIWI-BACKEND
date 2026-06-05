@@ -5,6 +5,8 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.extensions import db
 from app.models import Reporte, Caso, Estudiante, Paralelo, Sede, User, Evaluacion
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from utils.excel_processor import ExcelProcessor
 from typing import List, Dict
 
@@ -14,7 +16,7 @@ logger = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = {'xlsx', 'xls', 'csv'}
 
 USE_HARDCODED_FILE = True
-HARDCODED_FILE_PATH = "utils/Similitudes T1 2025-1.xlsx"
+HARDCODED_FILE_PATH = "utils/moss.xlsx"
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -313,7 +315,8 @@ def upload_reporte():
         nuevo_reporte = Reporte(
             titulo=nombre_reporte,
             user_id=current_user_id,
-            evaluacion_id=evaluacion_id
+            evaluacion_id=evaluacion_id,
+            url_moss=processed_data.get('url_padre_moss')
         )
         db.session.add(nuevo_reporte)
         db.session.flush()
@@ -466,6 +469,8 @@ def upload_reporte():
                     'error': str(e)
                 })
                 continue
+
+        evaluacion.fecha_entrega = datetime.now(ZoneInfo("America/Santiago")) + timedelta(days=14)
 
         db.session.commit()
 
@@ -703,10 +708,11 @@ def obtener_reportes():
                 'fecha_creacion': reporte.fecha_creacion.isoformat(),
                 'total_casos': len(reporte.casos),
                 'casos_abiertos': len([c for c in reporte.casos if not c.closed]),
-                'evaluacion': {
-                    'evaluacion_id': reporte.evaluacion.evaluacion_id,
-                    'nombre': reporte.evaluacion.nombre
-                } if reporte.evaluacion else None
+                    'evaluacion': {
+                        'evaluacion_id': reporte.evaluacion.evaluacion_id,
+                        'nombre': reporte.evaluacion.nombre,
+                        'fecha_entrega': reporte.evaluacion.fecha_entrega.isoformat() if reporte.evaluacion and reporte.evaluacion.fecha_entrega else None
+                    } if reporte.evaluacion else None
             })
         
         return jsonify(result), 200
@@ -741,6 +747,7 @@ def obtener_casos_reporte(reporte_id):
                 'lineas': caso.lineas,
                 'url_moss': caso.url_moss,
                 'closed': caso.closed,
+                    'fecha_entrega': caso.evaluacion.fecha_entrega.isoformat() if caso.evaluacion and caso.evaluacion.fecha_entrega else None,
                 'sancion': caso.sancion,
                 'caso_metadata': caso.caso_metadata,
                 'estudiantes': estudiantes
@@ -750,6 +757,7 @@ def obtener_casos_reporte(reporte_id):
             'reporte': {
                 'reporte_id': reporte.reporte_id,
                 'titulo': reporte.titulo,
+                'url_moss': reporte.url_moss,
                 'fecha_creacion': reporte.fecha_creacion.isoformat()
             },
             'casos': result
@@ -791,6 +799,7 @@ def obtener_estadisticas_reporte(reporte_id):
         return jsonify({
             'reporte_id': reporte.reporte_id,
             'titulo': reporte.titulo,
+            'url_moss': reporte.url_moss,
             'total_casos': total_casos,
             'estadisticas_casos': {
                 'cerrados': casos_cerrados,
@@ -821,6 +830,7 @@ def obtener_reporte_detalle(reporte_id):
         return jsonify({
             'reporte_id': reporte.reporte_id,
             'titulo': reporte.titulo,
+            'url_moss': reporte.url_moss,
             'fecha_creacion': reporte.fecha_creacion.isoformat(),
             'total_casos': len(reporte.casos),
             'casos_alta_similitud': len([c for c in reporte.casos if c.similitud >= 80])
@@ -878,6 +888,7 @@ def obtener_casos_filtrados(reporte_id):
                 'lineas': caso.lineas,
                 'url_moss': caso.url_moss,
                 'closed': caso.closed,
+                'fecha_entrega': caso.evaluacion.fecha_entrega.isoformat() if caso.evaluacion and caso.evaluacion.fecha_entrega else None,
                 'sancion': caso.sancion,
                 'caso_metadata': caso.caso_metadata,
                 'estudiantes': estudiantes
@@ -886,6 +897,41 @@ def obtener_casos_filtrados(reporte_id):
         return jsonify(result), 200
     except Exception as e:
         return jsonify({"msg": "Error al filtrar casos", "error": str(e)}), 500
+
+
+@reportes_bp.route('/caso/<int:caso_id>/aplazar', methods=['POST'])
+@jwt_required()
+def aplazar_plazo_caso(caso_id):
+    try:
+        data = request.get_json() or {}
+        dias = int(data.get('dias', 0))
+        if dias <= 0:
+            return jsonify({"msg": "El campo 'dias' debe ser un entero positivo"}), 400
+
+        current_user_id = int(get_jwt_identity())
+        caso = Caso.query.get(caso_id)
+        if not caso:
+            return jsonify({"msg": "Caso no encontrado"}), 404
+
+        # Permitir solo usuarios asignados o el creador del reporte
+        assigned_ids = [u.user_id for u in caso.usuarios_asignados]
+        if current_user_id not in assigned_ids and current_user_id != caso.reporte.user_id:
+            return jsonify({"msg": "No autorizado para aplazar el plazo"}), 403
+
+        evaluacion_obj = caso.evaluacion
+        if not evaluacion_obj:
+            return jsonify({"msg": "Evaluación asociada no encontrada para este caso"}), 400
+
+        if evaluacion_obj.fecha_entrega:
+            evaluacion_obj.fecha_entrega = evaluacion_obj.fecha_entrega + timedelta(days=dias)
+        else:
+            evaluacion_obj.fecha_entrega = datetime.now(ZoneInfo("America/Santiago")) + timedelta(days=dias)
+
+        db.session.commit()
+        return jsonify({"caso_id": caso.caso_id, "fecha_entrega": evaluacion_obj.fecha_entrega.isoformat()}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error aplazando el plazo", "error": str(e)}), 500
 
 @reportes_bp.route('/paralelos-reporte/<int:reporte_id>', methods=['GET'])
 @jwt_required()

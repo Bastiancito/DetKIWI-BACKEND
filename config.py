@@ -3,16 +3,26 @@ from datetime import timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
+ 
+
+def _env_bool(name, default=False):
+    return os.environ.get(name, str(default)).strip().lower() in {'1', 'true', 'yes', 'si', 'on'}
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'tu_clave_secreta_super_dificil_para_jwt_tokens'
+    SECRET_KEY = os.environ.get('SECRET_KEY')
     
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'postgresql://kiwi_user:kiwi_pass@db:5432/kiwi_db'
+    USE_PROD_ENV = _env_bool('USE_PROD_ENV', False)
+    DEBUG = _env_bool('FLASK_DEBUG', not USE_PROD_ENV)
+
+    DATABASE_URL_DEV = os.environ.get('DATABASE_URL_DEV') or os.environ.get('DATABASE_URL') or 'postgresql://kiwi_user:kiwi_pass@db:5432/kiwi_db'
+    DATABASE_URL_PROD = os.environ.get('DATABASE_URL_PROD') or os.environ.get('DATABASE_URL')
+
+    SQLALCHEMY_DATABASE_URI = DATABASE_URL_PROD if USE_PROD_ENV and DATABASE_URL_PROD else DATABASE_URL_DEV
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     ALLOW_PUBLIC_REGISTER = os.environ.get('ALLOW_PUBLIC_REGISTER', 'false').lower() == 'true'
     
-    JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or 'clave_secreta_jwt_minimo_32_bytes_para_sha256'
+    JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(
         minutes=int(os.environ.get('JWT_ACCESS_TOKEN_EXPIRES_MINUTES', '20160'))
     )
