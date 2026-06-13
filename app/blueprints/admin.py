@@ -290,6 +290,90 @@ def estadisticas_db():
             "detalle": str(e)
         }), 500
 
+
+@admin_bp.route('/limpiar-importacion/<int:evaluacion_id>', methods=['DELETE'])
+@jwt_required()
+def limpiar_importacion_evaluacion(evaluacion_id):
+    """
+    Elimina datos creados por una importación para una evaluación específica.
+    Garantiza la eliminación de Reportes y Casos sin violar Foreign Keys.
+    """
+    try:
+        resultado = {}
+
+        # 1. Identificar TODOS los reportes atados a esta evaluación
+        reportes = Reporte.query.filter_by(evaluacion_id=evaluacion_id).all()
+        reporte_ids = [r.reporte_id for r in reportes]
+
+        # 2. Identificar TODOS los casos atados a esos reportes (o a la evaluación directamente)
+        if reporte_ids:
+            casos = Caso.query.filter(
+                db.or_(
+                    Caso.reporte_id.in_(reporte_ids),
+                    Caso.evaluacion_id == evaluacion_id
+                )
+            ).all()
+        else:
+            casos = Caso.query.filter_by(evaluacion_id=evaluacion_id).all()
+            
+        caso_ids = [c.caso_id for c in casos]
+
+        # 3. Si hay casos, procedemos a destruir sus dependencias
+        if caso_ids:
+            from app.models import caso_estudiantes, caso_usuarios, caso_paralelos
+            
+            # Anotar estudiantes involucrados
+            estudiantes_query = db.session.query(caso_estudiantes.c.estudiante_id).filter(
+                caso_estudiantes.c.caso_id.in_(caso_ids)
+            ).all()
+            estudiante_ids = list(set([row[0] for row in estudiantes_query]))
+
+            # Destruir relaciones y sanciones
+            resultado['casos_sancionados'] = CasoSancionado.query.filter(CasoSancionado.caso_id.in_(caso_ids)).delete(synchronize_session=False)
+            resultado['caso_usuarios'] = db.session.execute(caso_usuarios.delete().where(caso_usuarios.c.caso_id.in_(caso_ids))).rowcount
+            resultado['caso_paralelos'] = db.session.execute(caso_paralelos.delete().where(caso_paralelos.c.caso_id.in_(caso_ids))).rowcount
+            resultado['caso_estudiantes'] = db.session.execute(caso_estudiantes.delete().where(caso_estudiantes.c.caso_id.in_(caso_ids))).rowcount
+
+            # Destruir los casos
+            resultado['casos'] = Caso.query.filter(Caso.caso_id.in_(caso_ids)).delete(synchronize_session=False)
+
+            # Destruir a los estudiantes (si ya no tienen más casos en otras evaluaciones)
+            if estudiante_ids:
+                est_en_otros_casos_query = db.session.query(caso_estudiantes.c.estudiante_id).filter(
+                    caso_estudiantes.c.estudiante_id.in_(estudiante_ids)
+                ).all()
+                est_en_otros_casos = set([row[0] for row in est_en_otros_casos_query])
+                est_a_eliminar = [eid for eid in estudiante_ids if eid not in est_en_otros_casos]
+                
+                if est_a_eliminar:
+                    resultado['estudiantes'] = Estudiante.query.filter(Estudiante.estudiante_id.in_(est_a_eliminar)).delete(synchronize_session=False)
+                else:
+                    resultado['estudiantes'] = 0
+
+        # 4. AHORA SÍ: Eliminar los reportes (están 100% huérfanos y no darán error)
+        if reporte_ids:
+            resultado['reportes'] = Reporte.query.filter(Reporte.reporte_id.in_(reporte_ids)).delete(synchronize_session=False)
+        else:
+            resultado['reportes'] = 0
+
+        # 5. OPCIONAL: Si quieres que este endpoint también borre la evaluación misma, 
+        # para no tener que hacerlo a mano en el frontend, descomenta esta línea:
+        # resultado['evaluacion'] = Evaluacion.query.filter_by(evaluacion_id=evaluacion_id).delete(synchronize_session=False)
+
+        db.session.commit()
+
+        return jsonify({
+            "message": f"✅ Limpieza de la evaluación {evaluacion_id} completada con éxito",
+            "registros_eliminados": resultado
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "error": f"Error crítico al limpiar datos de la evaluación {evaluacion_id}",
+            "detalle": str(e)
+        }), 500
+
 @admin_bp.route('/info', methods=['GET'])
 def info_admin():
     return jsonify({

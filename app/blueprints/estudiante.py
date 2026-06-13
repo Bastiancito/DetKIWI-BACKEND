@@ -12,7 +12,6 @@ def _serializar_sancion(sancion):
         'caso_id': sancion.caso_id,
         'estudiantes_involucrados': sancion.estudiantes_involucrados,
         'profesores_involucrados': sancion.profesores_involucrados,
-        'descripcion_sancion': sancion.descripcion_sancion,
         'fecha_sancion': sancion.fecha_sancion.isoformat() if sancion.fecha_sancion else None
     }
 

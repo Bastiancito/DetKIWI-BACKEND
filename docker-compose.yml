@@ -8,11 +8,15 @@ services:
       - "5000:5000"
     volumes:
       - .:/app
+    env_file:          # <-- Agrega esto para que Docker lea tu archivo .env
+      - .env           # <-- 
     environment:
+      - PYTHONUNBUFFERED=1
       - USE_PROD_ENV=false
       - DATABASE_URL_DEV=postgresql://kiwi_user:kiwi_pass@db:5432/kiwi_db
       - JWT_ACCESS_TOKEN_EXPIRES_MINUTES=20160
       - JWT_REFRESH_TOKEN_EXPIRES_DAYS=7
+      - JWT_SECRET_KEY=46971d87780983f4784cfc5999fba142b0e136b04899e08ec58d06840344f65b
     depends_on:
       - db
 

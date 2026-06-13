@@ -347,3 +347,99 @@ def debug_upload_participantes():
 
     except Exception as e:
         return jsonify({"msg": f"Error interno: {str(e)}"}), 500
+    
+@users_bp.route('/SeedUsuariosUnicaVez', methods=['GET'])
+def seed_usuarios_unica_vez():
+    """
+    Ruta de un solo uso para poblar la base de datos de producción.
+    IMPORTANTE: Borrar este código después de ejecutarlo.
+    """
+    nuevos_usuarios_data = [
+      { "username": "felipe.dumont", "email": "felipe.dumont@usm.cl", "password": "felipe123", "rol_id": 2, "paralelo_ids": ["INF129_1L", "INF129_7L"] },
+      { "username": "gustavo.ulloa", "email": "gustavo.ulloau@usm.cl", "password": "gustavo123", "rol_id": 2, "paralelo_ids": ["INF129_2L", "INF129_5L", "INF129_11L", "INF129_22L", "IWI131_6L"] },
+      { "username": "paulina.gonzalez", "email": "paulina.gonzalezp@usm.cl", "password": "paulina123", "rol_id": 2, "paralelo_ids": ["INF129_3L", "INF129_17L", "EIN413B_300", "EIN413B_301"] },
+      { "username": "alvaro.salinas", "email": "alvaro.salinas@usm.cl", "password": "alvaro123", "rol_id": 2, "paralelo_ids": ["INF129_4L", "INF129_16L"] },
+      { "username": "juan.zamora", "email": "juan.zamora@usm.cl", "password": "juan123", "rol_id": 2, "paralelo_ids": ["INF129_6L"] },
+      { "username": "pablo.cruz", "email": "pablo.cruz@usm.cl", "password": "pablo123", "rol_id": 2, "paralelo_ids": ["INF129_8L", "INF129_18L"] },
+      { "username": "diego.vicencio", "email": "diego.vicencio@usm.cl", "password": "diego123", "rol_id": 2, "paralelo_ids": ["INF129_9L"] },
+      { "username": "jean-pierre.villacura", "email": "jean-pierre.villacura@usm.cl", "password": "jean-pierre123", "rol_id": 2, "paralelo_ids": ["INF129_10L"] },
+      { "username": "andrea.freire", "email": "andrea.freire@usm.cl", "password": "andrea123", "rol_id": 2, "paralelo_ids": ["INF129_12L", "INF129_14L"] },
+      { "username": "andres.navarro", "email": "andres.navarro@usm.cl", "password": "andres123", "rol_id": 2, "paralelo_ids": ["INF129_13L", "INF129_15L", "INF129_20L"] },
+      { "username": "miguel.guevara", "email": "miguel.guevara@usm.cl", "password": "miguel123", "rol_id": 2, "paralelo_ids": ["INF129_19L", "INF129_21L"] },
+      { "username": "juan.jerez", "email": "juan.jerez@usm.cl", "password": "juan123", "rol_id": 2, "paralelo_ids": ["INF129_100L", "IWI131_101L", "IWI131_102L"] },
+      { "username": "ricardo.von", "email": "ricardo.vonkretschma@usm.cl", "password": "ricardo123", "rol_id": 2, "paralelo_ids": ["INF129_101L", "IWI131_100L"] },
+      { "username": "cristobal.loyola", "email": "cristobal.loyolam@usm.cl", "password": "cristobal123", "rol_id": 2, "paralelo_ids": ["INF129_200L", "INF129_203L", "INF129_205L", "INF129_208L", "INF129_211L", "IWI131_203L"] },
+      { "username": "viktor.tapia", "email": "viktor.tapia@usm.cl", "password": "viktor123", "rol_id": 2, "paralelo_ids": ["INF129_201L", "INF129_202L", "INF129_214L", "INF129_217L"] },
+      { "username": "rodrigo.caviedes", "email": "rodrigo.caviedes@usm.cl", "password": "rodrigo123", "rol_id": 2, "paralelo_ids": ["INF129_204L", "INF129_209L", "IWI131_202L"] },
+      { "username": "luis.ramirez", "email": "luis.ramirez@usm.cl", "password": "luis123", "rol_id": 2, "paralelo_ids": ["INF129_206L", "INF129_210L", "INF129_213L", "IWI131_200L", "IWI131_204L"] },
+      { "username": "pedro.toledo", "email": "pedro.toledo.12@usm.cl", "password": "pedro123", "rol_id": 2, "paralelo_ids": ["INF129_207L", "IWI131_201L"] },
+      { "username": "anibal.silva", "email": "anibal.silvao@usm.cl", "password": "anibal123", "rol_id": 2, "paralelo_ids": ["INF129_212L", "INF129_215L", "INF129_216L", "INF129_218L"] },
+      { "username": "alejandro.veloz", "email": "alejandro.veloz@usm.cl", "password": "alejandro123", "rol_id": 2, "paralelo_ids": ["IWI131_1L", "IWI131_5L"] },
+      { "username": "claudio.jara", "email": "claudio.jarac@usm.cl", "password": "claudio123", "rol_id": 2, "paralelo_ids": ["IWI131_2L", "IWI131_3L"] },
+      { "username": "andrea.vasquez", "email": "andrea.vasquezg@usm.cl", "password": "andrea123", "rol_id": 2, "paralelo_ids": ["IWI131_4L"] },
+      { "username": "pamela.gatica", "email": "pamela.gatica@usm.cl", "password": "pamela123", "rol_id": 2, "paralelo_ids": ["EIN413B_302"] },
+      { "username": "cristian.lara", "email": "cristian.lara@usm.cl", "password": "cristian123", "rol_id": 2, "paralelo_ids": ["EIN413B_701"] },
+      { "username": "juan.gonzalez", "email": "juan.gonzalezga@usm.cl", "password": "juan123", "rol_id": 2, "paralelo_ids": ["EIN413B_702"] },
+      { "username": "ana.rojas", "email": "ana.rojasc@usm.cl", "password": "ana123", "rol_id": 2, "paralelo_ids": ["ELI109A_300", "ELI109A_301"] },
+      { "username": "claudio.velquen", "email": "claudio.velquen@usm.cl", "password": "claudio123", "rol_id": 2, "paralelo_ids": ["ELI109A_701"] }
+    ]
+
+    usuarios_creados = 0
+    usuarios_saltados = 0
+    detalles = []
+
+    try:
+        # Cacheamos paralelos existentes para no saturar la BD
+        cache_paralelos = {p.sigla_paralelo: p for p in Paralelo.query.all()}
+
+        for user_data in nuevos_usuarios_data:
+            username = user_data['username']
+            email = user_data['email']
+
+            # 1. Verificar si ya existe en la BD
+            existing_user = User.query.filter((User.username == username) | (User.email == email)).first()
+            if existing_user:
+                detalles.append({"usuario": username, "status": "Omitido - Ya existe"})
+                usuarios_saltados += 1
+                continue
+
+            # 2. Instanciar nuevo usuario
+            new_user = User(
+                username=username,
+                email=email,
+                rol_id=user_data['rol_id']
+            )
+            new_user.set_password(user_data['password'])
+
+            # 3. Validar e instanciar paralelos
+            for sigla in user_data.get('paralelo_ids', []):
+                if sigla not in cache_paralelos:
+                    nuevo_paralelo = Paralelo(sigla_paralelo=sigla)
+                    db.session.add(nuevo_paralelo)
+                    db.session.flush() 
+                    cache_paralelos[sigla] = nuevo_paralelo
+                
+                paralelo_obj = cache_paralelos[sigla]
+                if paralelo_obj not in new_user.paralelos:
+                    new_user.paralelos.append(paralelo_obj)
+
+            # 4. Preparar usuario para guardado
+            db.session.add(new_user)
+            usuarios_creados += 1
+            detalles.append({"usuario": username, "status": "Creado exitosamente"})
+
+        # Confirmar todos los guardados
+        db.session.commit()
+
+        return jsonify({
+            "status": "Finalizado",
+            "resumen": {
+                "usuarios_creados": usuarios_creados,
+                "usuarios_omitidos": usuarios_saltados
+            },
+            "detalles": detalles
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500

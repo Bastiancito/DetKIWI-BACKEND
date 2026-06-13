@@ -233,7 +233,7 @@ def upload_reporte():
         processor = ExcelProcessor()
         
         if file.filename.endswith('.csv'):
-            df = pd.read_csv(file)
+            df = pd.read_csv(file, sep=None, engine='python')
         else:
             df = pd.read_excel(file)
         
