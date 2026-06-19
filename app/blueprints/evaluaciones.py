@@ -305,7 +305,11 @@ def obtener_casos_evaluacion(evaluacion_id):
                         'reporte_id': reporte.reporte_id,
                         'titulo': reporte.titulo,
                         'fecha_creacion': reporte.fecha_creacion.isoformat()
-                    }
+                    },
+                    'in_process': caso.in_process,
+                    'comentarios_profes': caso.comentarios_profes,
+                    'decisiones_profes': caso.decisiones_profes
+
                 })
         
         casos_result.sort(key=lambda x: x['similitud'], reverse=True)

@@ -61,8 +61,6 @@ def _cancelar_sanciones_activas(caso_id, cancelado_por):
         sancion.cancelado_por = cancelado_por
 
     # Al cancelar sanciones, limpiar los votos de los profesores para permitir nueva deliberación
-    if caso:
-        caso.decisiones_profes = {}
 
     return sanciones_activas
 
@@ -86,12 +84,14 @@ def _acumular_motivo_sancion_pendiente(caso, reason_mapping):
     if not reason_mapping:
         return
 
-    existente = caso.motivo_sancion or {}
-    if not isinstance(existente, dict):
-        existente = {}
+    # IMPORTANTE: Crear una copia del diccionario para no perder referencia
+    existente = dict(caso.motivo_sancion) if caso.motivo_sancion else {}
 
     existente.update(reason_mapping)
     caso.motivo_sancion = existente
+    
+    # AVISO A SQLALCHEMY (Línea crucial añadida)
+    flag_modified(caso, 'motivo_sancion')
 
 
 def _extraer_descripcion_desde_reason(reason_value):
@@ -104,6 +104,21 @@ def _extraer_descripcion_desde_reason(reason_value):
     return None
 
 def to_dict(caso):
+    # 1. Buscamos si ya existe una sanción consolidada activa en la BD para este caso
+    sancion_activa = CasoSancionado.query.filter_by(caso_id=caso.caso_id, cancelado=False).order_by(CasoSancionado.fecha_sancion.desc()).first()
+
+    reason_value = None
+    descripcion_sancion = None
+
+    # 2. Respetamos la misma regla del endpoint GET: Prioridad a la sanción activa, fallback al motivo temporal
+    if sancion_activa:
+        reason_value = sancion_activa.reason
+        descripcion_sancion = _extraer_descripcion_desde_reason(sancion_activa.reason)
+    elif caso.motivo_sancion:
+        reason_value = caso.motivo_sancion
+        descripcion_sancion = _extraer_descripcion_desde_reason(caso.motivo_sancion)
+
+    # 3. Retornamos el diccionario incluyendo los nuevos campos mapeados
     return {
         'caso_id': caso.caso_id,
         'reporte_id': caso.reporte_id,
@@ -115,6 +130,8 @@ def to_dict(caso):
         'sancion': caso.sancion,
         'caso_metadata': caso.caso_metadata,
         'motivo_sancion': caso.motivo_sancion,
+        'reason': reason_value,                  # <--- CAMPO CRUCIAL AÑADIDO
+        'descripcion_sancion': descripcion_sancion,  # <--- CAMPO CRUCIAL AÑADIDO
         'evaluacion_id': caso.evaluacion_id,
         'comentarios_profes': caso.comentarios_profes,
         'decisiones_profes': caso.decisiones_profes,
@@ -176,18 +193,26 @@ def _crear_o_reactivar_sancion(caso, reason_mapping, comentarios_caso):
     if sancion_activa:
         sancion_activa.estudiantes_involucrados = estudiantes_involucrados
         sancion_activa.profesores_involucrados = usuarios_involucrados
-        # merge reason mappings if provided (preserve existing keys)
-        existing = sancion_activa.reason or {}
-        if not isinstance(existing, dict):
-            existing = {}
+        
+        # IMPORTANTE: Copia del diccionario
+        existing = dict(sancion_activa.reason) if sancion_activa.reason else {}
+        
         if reason_to_persist:
             existing.update(reason_to_persist)
+            
         sancion_activa.reason = existing
+        
+        # AVISO A SQLALCHEMY (Línea crucial añadida)
+        flag_modified(sancion_activa, 'reason')
+        
         sancion_activa.comentarios_caso = comentarios_caso
         sancion_activa.cancelado = False
         sancion_activa.fecha_cancelacion = None
         sancion_activa.cancelado_por = None
         caso.motivo_sancion = None
+        # Opcionalmente, puedes agregar flag_modified(caso, 'motivo_sancion') aquí 
+        # si notas que no se está limpiando, pero al ser None suele detectarlo solo.
+        
         return sancion_activa, False
 
     sancion = CasoSancionado(
@@ -418,9 +443,10 @@ def obtener_mis_casos(evaluacion_id=None):
                 'caso_metadata': caso.caso_metadata,
                 'paralelos': _serializar_paralelos_caso(caso),
                 'estudiantes': estudiantes,
-                'usuarios_asignados': usuarios_asignados
+                'usuarios_asignados': usuarios_asignados,
+                'decisiones_profes': caso.decisiones_profes,
+                'comentarios_profes': caso.comentarios_profes
             })
-        
         return jsonify({
             'total_casos': len(result),
             'casos': result
@@ -501,6 +527,8 @@ def obtener_casos_por_paralelo_evaluacion(paralelo_id, evaluacion_id):
                 'sancion': caso.sancion,
                 'caso_metadata': caso.caso_metadata,
                 'paralelos': _serializar_paralelos_caso(caso),
+                'comentarios_profes': caso.comentarios_profes,
+                'decisiones_profes': caso.decisiones_profes,
                 'estudiantes': estudiantes,
                 'usuarios_asignados': [
                     {
@@ -1176,7 +1204,9 @@ def sancionar_caso(caso_id):
             return jsonify({"msg": "Caso no encontrado"}), 404
 
         assigned_ids = [u.user_id for u in caso.usuarios_asignados]
-        decisiones = caso.decisiones_profes or {}
+        
+        # 1. Crear copias de los diccionarios para no perder la referencia
+        decisiones = dict(caso.decisiones_profes) if caso.decisiones_profes else {}
 
         raw_reason = data.get('reason')
         if isinstance(raw_reason, dict):
@@ -1196,17 +1226,18 @@ def sancionar_caso(caso_id):
         if len(assigned_ids) <= 1:
             decisiones[str(current_user_id)] = True
             caso.decisiones_profes = decisiones
+            flag_modified(caso, 'decisiones_profes') # <-- AVISO A SQLALCHEMY
+
             caso.sancion = True
             caso.closed = True
             caso.in_process = False
 
             # Inline acumular motivo pendiente
             if reason_mapping:
-                existente = caso.motivo_sancion or {}
-                if not isinstance(existente, dict):
-                    existente = {}
+                existente = dict(caso.motivo_sancion) if caso.motivo_sancion else {}
                 existente.update(reason_mapping)
                 caso.motivo_sancion = existente
+                flag_modified(caso, 'motivo_sancion') # <-- AVISO A SQLALCHEMY
 
             # Inline crear/reactivar sancion
             sancion_activa = CasoSancionado.query.filter_by(caso_id=caso.caso_id, cancelado=False).order_by(CasoSancionado.fecha_sancion.desc()).first()
@@ -1226,23 +1257,21 @@ def sancionar_caso(caso_id):
             }
 
             merged_reason = {}
-            existente = caso.motivo_sancion or {}
-            if isinstance(existente, dict):
-                merged_reason.update(existente)
+            if isinstance(caso.motivo_sancion, dict):
+                merged_reason.update(caso.motivo_sancion)
             if isinstance(reason_mapping, dict):
                 merged_reason.update(reason_mapping)
 
             reason_to_persist = merged_reason if merged_reason else None
-            descripcion_para_persistir = _extraer_descripcion_desde_reason(reason_to_persist) or ''
 
             sancion_creada = False
             if sancion_activa:
-                existing = sancion_activa.reason or {}
-                if not isinstance(existing, dict):
-                    existing = {}
+                existing = dict(sancion_activa.reason) if sancion_activa.reason else {}
                 if reason_to_persist:
                     existing.update(reason_to_persist)
-                sancion_activa.reason = existing
+                sancion_activa.reason = existing # <-- Se pasa diccionario limpio
+                flag_modified(sancion_activa, 'reason') # <-- AVISO A SQLALCHEMY EN SANCION
+                
                 sancion_activa.estudiantes_involucrados = estudiantes_involucrados
                 sancion_activa.profesores_involucrados = usuarios_involucrados
                 sancion_activa.comentarios_caso = caso.comentarios_profes
@@ -1255,7 +1284,7 @@ def sancionar_caso(caso_id):
                     caso_id=caso.caso_id,
                     estudiantes_involucrados=estudiantes_involucrados,
                     profesores_involucrados=usuarios_involucrados,
-                    reason=reason_to_persist,
+                    reason=reason_to_persist, # <-- Se pasa diccionario limpio, sin json.dumps
                     comentarios_caso=caso.comentarios_profes,
                 )
                 db.session.add(sancion)
@@ -1266,7 +1295,6 @@ def sancionar_caso(caso_id):
                 for est in caso.involucrados:
                     est.num_sanciones = (est.num_sanciones or 0) + 1
 
-            # flush pending changes and build payload from in-memory object to avoid extra SELECT
             db.session.flush()
             caso_payload = to_dict(caso)
             db.session.commit()
@@ -1275,6 +1303,8 @@ def sancionar_caso(caso_id):
         # Multi-assigned -> register vote and check consensus
         decisiones[str(current_user_id)] = True
         caso.decisiones_profes = decisiones
+        flag_modified(caso, 'decisiones_profes') # <-- AVISO A SQLALCHEMY
+
         _acumular_motivo_sancion_pendiente(caso, reason_mapping)
 
         claves = set(int(k) for k in decisiones.keys())
@@ -1299,6 +1329,7 @@ def sancionar_caso(caso_id):
         caso_payload = to_dict(caso)
         db.session.commit()
         return jsonify({"msg": "Voto registrado", "caso": caso_payload}), 200
+
     except Exception as e:
         db.session.rollback()
         return jsonify({"msg": "Error al sancionar caso", "error": str(e)}), 500
@@ -1320,7 +1351,9 @@ def indultar_caso(caso_id):
             return jsonify({"msg": "Caso no encontrado"}), 404
 
         assigned_ids = [u.user_id for u in caso.usuarios_asignados]
-        decisiones = caso.decisiones_profes or {}
+        
+        # CORRECCIÓN: Copia profunda del diccionario de decisiones
+        decisiones = dict(caso.decisiones_profes) if caso.decisiones_profes else {}
 
         reason_mapping = _normalizar_motivo_sancion(data.get('reason'), descripcion_sancion, current_user_id)
 
@@ -1328,17 +1361,19 @@ def indultar_caso(caso_id):
         if len(assigned_ids) <= 1:
             decisiones[str(current_user_id)] = False
             caso.decisiones_profes = decisiones
+            flag_modified(caso, 'decisiones_profes') # CORRECCIÓN: Aviso a SQLAlchemy
+
             caso.sancion = False
             caso.closed = True
             caso.in_process = False
 
             # Inline acumular motivo pendiente
             if reason_mapping:
-                existente = caso.motivo_sancion or {}
-                if not isinstance(existente, dict):
-                    existente = {}
+                # CORRECCIÓN: Copia profunda del motivo
+                existente = dict(caso.motivo_sancion) if caso.motivo_sancion else {}
                 existente.update(reason_mapping)
                 caso.motivo_sancion = existente
+                flag_modified(caso, 'motivo_sancion') # CORRECCIÓN: Aviso a SQLAlchemy
 
             # Inline cancelar sanciones activas
             sanciones_activas = CasoSancionado.query.filter_by(caso_id=caso.caso_id, cancelado=False).all()
@@ -1349,7 +1384,8 @@ def indultar_caso(caso_id):
                 sancion.cancelado = True
                 sancion.fecha_cancelacion = fecha_cancelacion
                 sancion.cancelado_por = current_user_id
-            caso.decisiones_profes = {}
+            
+            
 
             db.session.flush()
             caso_payload = to_dict(caso)
@@ -1358,10 +1394,11 @@ def indultar_caso(caso_id):
 
         # Multi-assigned -> register vote and check consensus
         decisiones[str(current_user_id)] = False
-        caso.decisiones_profes = dict(decisiones)
+        caso.decisiones_profes = decisiones # Ya es un dict nuevo
         flag_modified(caso, 'decisiones_profes')
+        
         _acumular_motivo_sancion_pendiente(caso, reason_mapping)
-        flag_modified(caso, 'motivo_sancion')
+        # _acumular_motivo_sancion_pendiente ya tiene su propio flag_modified por nuestra corrección anterior
 
         claves = set(int(k) for k in decisiones.keys())
         asignados = set(assigned_ids)
@@ -1397,6 +1434,7 @@ def cambiar_opinion(caso_id):
         sancion = data.get('sancion')
         descripcion_sancion = data.get('descripcion_sancion')
         reason_mapping = _normalizar_motivo_sancion(data.get('reason'), descripcion_sancion, current_user_id)
+        
         caso = Caso.query.get(caso_id)
         if not caso:
             return jsonify({"msg": "Caso no encontrado"}), 404
@@ -1405,12 +1443,10 @@ def cambiar_opinion(caso_id):
 
         assigned_ids = [u.user_id for u in caso.usuarios_asignados]
 
-        # Defensive normalization
-        decisiones = caso.decisiones_profes or {}
-        motivos = caso.motivo_sancion or {}
-        metadata = caso.caso_metadata or {}
-        if not isinstance(metadata, dict):
-            metadata = {}
+        # CORRECCIÓN: Defensive normalization con copias reales en memoria
+        decisiones = dict(caso.decisiones_profes) if caso.decisiones_profes else {}
+        motivos = dict(caso.motivo_sancion) if caso.motivo_sancion else {}
+        metadata = dict(caso.caso_metadata) if caso.caso_metadata else {} # ¡Este era el bug oculto!
 
         key = str(current_user_id)
         current_vote = decisiones.get(key)
@@ -1448,8 +1484,7 @@ def cambiar_opinion(caso_id):
 
         # Apply new vote and clear any pending motivo for this user
         decisiones[key] = new_vote
-        # Assign a new dict so SQLAlchemy JSON change is detected
-        caso.decisiones_profes = dict(decisiones)
+        caso.decisiones_profes = decisiones
         flag_modified(caso, 'decisiones_profes')
 
         if isinstance(motivos, dict):
@@ -1461,11 +1496,11 @@ def cambiar_opinion(caso_id):
                 else:
                     motivos[key] = motivos.get(key)
 
-            caso.motivo_sancion = dict(motivos) if motivos else None
+            caso.motivo_sancion = motivos if motivos else None
             flag_modified(caso, 'motivo_sancion')
 
         caso.caso_metadata = metadata
-        flag_modified(caso, 'caso_metadata')
+        flag_modified(caso, 'caso_metadata') # ¡Avisamos que el metadata cambió!
 
         if len(assigned_ids) <= 1:
             caso.sancion = new_vote
@@ -1474,7 +1509,7 @@ def cambiar_opinion(caso_id):
 
             if new_vote:
                 _acumular_motivo_sancion_pendiente(caso, reason_mapping)
-                flag_modified(caso, 'motivo_sancion')
+                # flag_modified ya cubierto dentro de la funcion
 
                 _, sancion_creada = _crear_o_reactivar_sancion(
                     caso=caso,
@@ -1497,8 +1532,7 @@ def cambiar_opinion(caso_id):
 
                 if decision_comun:
                     _acumular_motivo_sancion_pendiente(caso, reason_mapping)
-                    flag_modified(caso, 'motivo_sancion')
-
+                    
                     _, sancion_creada = _crear_o_reactivar_sancion(
                         caso=caso,
                         reason_mapping=reason_mapping,
@@ -1520,23 +1554,19 @@ def cambiar_opinion(caso_id):
                         _cancelar_sanciones_activas(caso.caso_id, current_user_id)
 
         db.session.commit()
-        # reload to ensure freshest DB state
+        
         caso = Caso.query.get(caso.caso_id)
-        # Rebuild the caso payload to ensure it contains the freshly-applied JSON fields
         caso_payload = to_dict(caso)
-        caso_payload['decisiones_profes'] = dict(decisiones)
-        caso_payload['motivo_sancion'] = dict(motivos) if isinstance(motivos, dict) and motivos else None
-
-        # Return the applied vote explicitly for client-side verification
+        
         return jsonify({"msg": "Opinión cambiada", "caso": caso_payload, "applied_vote": decisiones.get(key)}), 200
     except Exception as e:
         db.session.rollback()
         return jsonify({"msg": "Error al cambiar opinión", "error": str(e)}), 500
     
+
 @casos_bp.route('/ForzarSancion/<int:caso_id>', methods=['POST'])
 @jwt_required()
 def forzar_sancion(caso_id):
-
     try:
         current_user_id = int(get_jwt_identity())
         data = request.get_json(silent=True) or {}
@@ -1551,9 +1581,12 @@ def forzar_sancion(caso_id):
         caso.sancion = True
         caso.closed = True
         caso.in_process = False
-        decisiones = caso.decisiones_profes or {}
+        
+        # CORRECCIÓN: Evitamos la pérdida de la referencia
+        decisiones = dict(caso.decisiones_profes) if caso.decisiones_profes else {}
         decisiones[str(current_user_id)] = True
         caso.decisiones_profes = decisiones
+        flag_modified(caso, 'decisiones_profes') # CORRECCIÓN
 
         descripcion = data.get('descripcion_sancion', 'Amonestación por plagio')
         reason_mapping = _normalizar_motivo_sancion(data.get('reason'), descripcion, current_user_id)
@@ -1567,6 +1600,7 @@ def forzar_sancion(caso_id):
         if sancion_creada:
             for est in caso.involucrados:
                 est.num_sanciones = (est.num_sanciones or 0) + 1
+                
         db.session.flush()
         caso_payload = to_dict(caso)
         db.session.commit()
@@ -1593,9 +1627,12 @@ def forzar_indulto(caso_id):
         caso.sancion = False
         caso.closed = True
         caso.in_process = False
-        decisiones = caso.decisiones_profes or {}
+        
+        # CORRECCIÓN: Evitamos la pérdida de la referencia
+        decisiones = dict(caso.decisiones_profes) if caso.decisiones_profes else {}
         decisiones[str(current_user_id)] = False
         caso.decisiones_profes = decisiones
+        flag_modified(caso, 'decisiones_profes') # CORRECCIÓN
 
         _cancelar_sanciones_activas(caso.caso_id, current_user_id)
 
@@ -1684,3 +1721,180 @@ def actualizar_caso_por_id(caso_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({"msg": "Error al actualizar caso", "error": str(e)}), 500
+    
+
+@casos_bp.route('/ReplicarCaso', methods=['POST'])
+def replicar_caso_dev_directo():
+    """
+    Endpoint para desarrollo. 
+    Inserta un caso asumiendo que todas las llaves foráneas (reporte_id, paralelo_id, 
+    estudiante_id, user_id) ya existen perfectamente en la base de datos local.
+    """
+    try:
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"msg": "Se requiere el JSON del caso"}), 400
+
+        # 1. Crear el objeto principal Caso usando los IDs directamente
+        nuevo_caso = Caso(
+            reporte_id=data.get('reporte_id'),
+            similitud=data.get('similitud'),
+            lineas=data.get('lineas'),
+            url_moss=data.get('url_moss'),
+            closed=data.get('closed', False),
+            in_process=data.get('in_process', False),
+            sancion=data.get('sancion'),
+            caso_metadata=data.get('caso_metadata'),
+            motivo_sancion=data.get('motivo_sancion'),
+            comentarios_profes=data.get('comentarios_profes'),
+            decisiones_profes=data.get('decisiones_profes')
+        )
+
+        # 2. Asociar los Paralelos existentes
+        for p in data.get('paralelos', []):
+            paralelo = Paralelo.query.get(p['paralelo_id'])
+            if paralelo:
+                nuevo_caso.paralelos.append(paralelo)
+
+        # 3. Asociar los Estudiantes existentes (mapeados en la columna `involucrados`)
+        for e in data.get('estudiantes', []):
+            estudiante = Estudiante.query.get(e['estudiante_id'])
+            if estudiante:
+                nuevo_caso.involucrados.append(estudiante)
+
+        # 4. Asociar los Usuarios Asignados existentes
+        for u in data.get('usuarios_asignados', []):
+            usuario = User.query.get(u['user_id'])
+            if usuario:
+                nuevo_caso.usuarios_asignados.append(usuario)
+
+        # 5. Persistir en la Base de Datos
+        db.session.add(nuevo_caso)
+        db.session.commit()
+
+        return jsonify({
+            "msg": "Caso replicado exitosamente en local",
+            "caso_id": nuevo_caso.caso_id
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error al replicar el caso", "error": str(e)}), 500
+    
+
+@casos_bp.route('/DeshacerSancionDev/<int:caso_id>/<string:user_id_ruta>', methods=['POST'])
+def deshacer_sancion_dev(caso_id, user_id_ruta):
+    """
+    Endpoint exclusivo para pruebas locales (Development).
+    Revierte por completo el voto de un profesor específico y los efectos de la sanción.
+    Recibe el caso_id y el user_id directamente en la ruta para evitar el uso de tokens JWT.
+    """
+    try:
+        # Usamos el ID de usuario que viene desde la ruta de la URL
+        current_user_id = str(user_id_ruta)
+        
+        caso = Caso.query.get(caso_id)
+        if not caso:
+            return jsonify({"msg": "Caso no encontrado"}), 404
+
+        voto_modificado = False
+        
+        # 1. Limpiar el voto del profesor en decisiones_profes (JSON)
+        if caso.decisiones_profes and current_user_id in caso.decisiones_profes:
+            del caso.decisiones_profes[current_user_id]
+            flag_modified(caso, 'decisiones_profes')
+            voto_modificado = True
+
+        # 2. Limpiar el motivo temporal en motivo_sancion (JSON)
+        if caso.motivo_sancion and current_user_id in caso.motivo_sancion:
+            del caso.motivo_sancion[current_user_id]
+            flag_modified(caso, 'motivo_sancion')
+            voto_modificado = True
+
+        if not voto_modificado:
+            return jsonify({
+                "msg": f"El usuario {current_user_id} no registra un voto o motivo activo en este caso"
+            }), 400
+
+        # 3. Revertir el estado general del caso a "en proceso"
+        caso.closed = False
+        caso.in_process = True
+        caso.sancion = None
+
+        # 4. Eliminar el registro oficial de la sanción (CasoSancionado)
+        # Esto automáticamente disminuye el conteo de sanciones de los estudiantes relacionados
+        sanciones_asociadas = CasoSancionado.query.filter_by(caso_id=caso_id).all()
+        if sanciones_asociadas:
+            for sancion in sanciones_asociadas:
+                db.session.delete(sancion)
+        else:
+            pass
+
+
+        # 5. Persistir los cambios en la base de datos
+        db.session.commit()
+
+        return jsonify({
+            "msg": f"Voto del usuario {current_user_id} y sanción del caso {caso_id} revertidos exitosamente",
+            "caso_id": caso.caso_id,
+            "usuario_afectado": current_user_id
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error al revertir la sanción en modo pruebas", "error": str(e)}), 500
+
+@casos_bp.route('/ReabrirCasoDev/<int:caso_id>', methods=['POST'])
+def reabrir_caso_dev(caso_id):
+    """
+    Endpoint exclusivo para pruebas locales (Development).
+    Reabre por completo un caso desde cero:
+    1. Vacía las decisiones de todos los profesores implicados.
+    2. Vacía los motivos temporales de sanción asignados.
+    3. Restablece el estado del caso a: en proceso (true) y cerrado (false).
+    4. Elimina la sanción definitiva (CasoSancionado), restando el contador a los alumnos.
+    """
+    try:
+        caso = Caso.query.get(caso_id)
+        if not caso:
+            return jsonify({"msg": "Caso no encontrado"}), 404
+
+        # 1. Resetear por completo los diccionarios JSON de votaciones a su estado inicial
+        caso.decisiones_profes = {}
+        caso.motivo_sancion = {}
+        
+        # Notificar explícitamente a SQLAlchemy que mutamos los campos JSON
+        flag_modified(caso, 'decisiones_profes')
+        flag_modified(caso, 'motivo_sancion')
+
+        # 2. Devolver el caso a su estado original "en proceso"
+        caso.closed = False
+        caso.in_process = False
+        caso.sancion = None
+
+        # 3. Eliminar físicamente el registro oficial de la sanción si es que existía
+        sanciones_asociadas = CasoSancionado.query.filter_by(caso_id=caso_id).all()
+        if sanciones_asociadas:
+
+
+            for sancion in sanciones_asociadas:
+                db.session.delete(sancion)
+        else:
+            pass
+        # 4. Confirmar la transacción en la base de datos
+        db.session.commit()
+
+        return jsonify({
+            "msg": f"El caso {caso_id} ha sido reiniciado desde cero exitosamente",
+            "caso_id": caso.caso_id,
+            "estado_actual": {
+                "in_process": caso.in_process,
+                "closed": caso.closed,
+                "decisiones_profes": caso.decisiones_profes,
+                "motivo_sancion": caso.motivo_sancion
+            }
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error al reiniciar y reabrir el caso desde cero", "error": str(e)}), 500

@@ -55,7 +55,8 @@ def get_user_by_email(email):
         'username': user.username,
         'email': user.email,
         'rol_id': user.rol_id,
-        'paralelos': paralelos
+        'paralelos': paralelos,
+        'password': user.password
     }
     return jsonify(user_data), 200
 
